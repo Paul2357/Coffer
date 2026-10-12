@@ -1,0 +1,40 @@
+plugins { id 'java' }
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://repo.runelite.net' }
+}
+
+def runeLiteVersion = 'latest.release'
+def lombokVersion = '1.18.38'   // 1.18.24 crashes on JDK 17+ (ExceptionInInitializerError)
+
+dependencies {
+    compileOnly group: 'net.runelite', name: 'client', version: runeLiteVersion
+    compileOnly "org.projectlombok:lombok:${lombokVersion}"
+    annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+    // okhttp3 + gson come transitively from the runelite client dependency — do not declare them
+    // directly (Hub guideline: don't add runelite-client transitives to build.gradle).
+
+    testImplementation group: 'net.runelite', name: 'client', version: runeLiteVersion
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation "org.projectlombok:lombok:${lombokVersion}"
+    testAnnotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+// Boots a real RuneLite client with GE Copilot Cloud loaded (developer mode).
+tasks.register('runClient', JavaExec) {
+    group = 'application'
+    description = 'Run RuneLite with GE Copilot Cloud loaded (developer mode)'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.gecopilot.client.GeCopilotCloudLauncher'
+    jvmArgs '-ea'                 // RuneLite requires assertions enabled
+    if (System.getProperty('os.name').toLowerCase().contains('mac')) {
+        jvmArgs '--add-exports=java.desktop/com.apple.eawt=ALL-UNNAMED'
+    }
+    args '--developer-mode'
+}
