@@ -30,15 +30,81 @@ public class ApiClient {
     // Selected RS account for P&L views; null = all accounts. Applied to /api/dashboard and /api/log.
     private volatile String account = null;
 
+    /** Connection state as seen by the panel. Derived centrally from every API response so a
+     *  401/5xx/network failure can never silently masquerade as "no data". */
+    public enum ConnState { OK, SIGNED_OUT, UNREACHABLE }
+    private volatile ConnState connState = ConnState.OK;
+    private volatile java.util.function.Consumer<ConnState> connListener = s -> {};
+
+    public ConnState connState() { return connState; }
+    public void onConnState(java.util.function.Consumer<ConnState> l) { this.connListener = l != null ? l : s -> {}; }
+
+    private void setConn(ConnState s) {
+        if (connState == s) return;
+        connState = s;
+        try { connListener.accept(s); } catch (RuntimeException ignored) { }
+    }
+
+    /**
+     * Observes every response. Only authenticated calls (Authorization header present) can flip the
+     * state to SIGNED_OUT; the server has no refresh endpoint and the plugin stores no password, so
+     * no silent re-auth is possible: the token is dropped and the panel shows the login card.
+     */
+    okhttp3.Response observe(okhttp3.Interceptor.Chain chain) throws java.io.IOException {
+        Request req = chain.request();
+        boolean authed = req.header("Authorization") != null;
+        okhttp3.Response res;
+        try { res = chain.proceed(req); }
+        catch (java.io.IOException e) { setConn(ConnState.UNREACHABLE); throw e; }
+        int c = res.code();
+        if (authed && c >= 200 && c < 300) maybeSwapToken(req.header("Authorization"), res.header(RENEW_HEADER));
+        if (c == 401 && authed) {
+            // Ignore a 401 for a token that has since been replaced (e.g. a re-login raced it).
+            String sent = req.header("Authorization");
+            synchronized (this) { if (token != null && sent.equals("Bearer " + token)) { token = null; tier = null; } }
+            if (token == null) setConn(ConnState.SIGNED_OUT);
+        } else if (c >= 500) {
+            setConn(ConnState.UNREACHABLE);
+        } else if (connState == ConnState.UNREACHABLE || (connState == ConnState.SIGNED_OUT && token != null)) {
+            setConn(ConnState.OK);
+        }
+        return res;
+    }
+
+    /** Rolling-session header (server TokenRenewer). */
+    public static final String RENEW_HEADER = "X-Coffer-Token";
+    private volatile java.util.function.Consumer<String> tokenListener = t -> {};
+    /** Called (off the EDT, on the request thread) with each renewed token so it can be persisted. */
+    public void onTokenRenewed(java.util.function.Consumer<String> l) { this.tokenListener = l != null ? l : t -> {}; }
+
+    /**
+     * Atomically replace the token iff the request was made with the token that is still current;
+     * a renewal answering a stale request (after a logout/re-login) is dropped.
+     */
+    void maybeSwapToken(String sentAuth, String renewed) {
+        if (renewed == null || sentAuth == null) return;
+        String fresh = renewed.trim();
+        if (fresh.isEmpty() || fresh.indexOf(' ') >= 0 || fresh.split("\\.", -1).length != 3) return; // JWT shape only
+        // Swap AND persist under the lock signOut/clearToken take: a logout either happens before
+        // (token null -> no swap, nothing saved) or after (it clears what we saved). Never between.
+        synchronized (this) {
+            if (token == null || !sentAuth.equals("Bearer " + token) || fresh.equals(token)) return;
+            token = fresh;
+            try { tokenListener.accept(fresh); } catch (RuntimeException ignored) { }
+        }
+    }
+
+    String currentTokenForTest() { return token; }
+
     public ApiClient(OkHttpClient http, Gson gson, String baseUrl) {
-        this.http = http;
+        this.http = http == null ? null : http.newBuilder().addInterceptor(this::observe).build();
         this.gson = gson;
         this.baseUrl = baseUrl.replaceAll("/+$", "");
     }
 
     public boolean hasToken() { return token != null; }
     public String tier() { return tier; }
-    public void setToken(String t) { this.token = t; }
+    public synchronized void setToken(String t) { this.token = t; if (t != null && connState == ConnState.SIGNED_OUT) setConn(ConnState.OK); }
 
     /** Restart the "Session" P&L window (call on login / when the user resets the session). */
     public void resetSession() { this.sessionStart = System.currentTimeMillis(); }
@@ -52,7 +118,17 @@ public class ApiClient {
         try { return sep + "account=" + java.net.URLEncoder.encode(account, "UTF-8"); }
         catch (Exception e) { return ""; }
     }
-    public void clearToken() { this.token = null; this.tier = null; }
+    public synchronized void clearToken() { this.token = null; this.tier = null; }
+
+    /**
+     * Sign out atomically with respect to a rolling-token swap: the token is cleared and the
+     * persisted session removed under the same lock maybeSwapToken saves under, so a renewal that
+     * races a logout can never resurrect the session.
+     */
+    public synchronized void signOut(Runnable clearStore) {
+        this.token = null; this.tier = null;
+        if (clearStore != null) clearStore.run();
+    }
 
     public LoginResult login(String user, String pass) {
         JsonObject b = new JsonObject();
@@ -64,7 +140,7 @@ public class ApiClient {
             LoginResult r = (res.body() != null) ? parseLogin(res.body().string()) : new LoginResult();
             r.reached = true;
             r.code = res.code();
-            if (r.ok) { token = r.token; tier = r.tier; sessionStart = System.currentTimeMillis(); }
+            if (r.ok) { token = r.token; tier = r.tier; sessionStart = System.currentTimeMillis(); setConn(ConnState.OK); }
             return r;
         } catch (Exception e) {
             LoginResult r = new LoginResult(); // timeout / unreachable (e.g. Render cold start)
@@ -84,7 +160,7 @@ public class ApiClient {
             LoginResult r = (res.body() != null) ? parseLogin(res.body().string()) : new LoginResult();
             r.reached = true;
             r.code = res.code();
-            if (r.ok) { token = r.token; tier = r.tier; sessionStart = System.currentTimeMillis(); }
+            if (r.ok) { token = r.token; tier = r.tier; sessionStart = System.currentTimeMillis(); setConn(ConnState.OK); }
             return r;
         } catch (Exception e) {
             LoginResult r = new LoginResult();

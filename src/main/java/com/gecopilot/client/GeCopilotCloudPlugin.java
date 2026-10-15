@@ -159,6 +159,8 @@ public class GeCopilotCloudPlugin extends Plugin {
             .callTimeout(70, TimeUnit.SECONDS)
             .build();
         api = new ApiClient(apiHttp, gson, com.gecopilot.client.ServerConfig.BASE_URL);
+        api.onConnState(this::onConnState);
+        api.onTokenRenewed(tokenStore::save); // rolling session: persist exactly like a login token
         panel.onLogin((user, pass) -> executor.execute(() -> {
             com.gecopilot.client.api.LoginResult r = api.login(user, pass);
             if (r.ok) {
@@ -236,8 +238,7 @@ public class GeCopilotCloudPlugin extends Plugin {
             }
         }));
         panel.onLogout(() -> {
-            tokenStore.clear();
-            api.clearToken();
+            api.signOut(tokenStore::clear); // atomic vs a concurrent rolling-token save
             guideStage = null;
             guideFinished = false;
             panel.resetSessionGuide();
@@ -321,6 +322,24 @@ public class GeCopilotCloudPlugin extends Plugin {
 
     private static final int RESTORE_ATTEMPTS = 6;
 
+    /** Any authed 401 (expired/killed session) or outage: never leave stale empty tabs on screen. */
+    private void onConnState(com.gecopilot.client.api.ApiClient.ConnState s) {
+        switch (s) {
+            case SIGNED_OUT:
+                api.signOut(tokenStore::clear);
+                panel.setConnNotice(null);
+                panel.showLogin(SIGNED_OUT_MSG);
+                break;
+            case UNREACHABLE:
+                if (api.hasToken()) panel.setConnNotice(UNREACHABLE_MSG);
+                break;
+            default:
+                panel.setConnNotice(null);
+        }
+    }
+    static final String SIGNED_OUT_MSG = "Signed out — your session expired. Log in again.";
+    static final String UNREACHABLE_MSG = "Can't reach Coffer — retrying…";
+
     /** No session: show the free F2P preview if reachable, else fall back to the login form. */
     private void showPreviewOrLogin() {
         executor.execute(() -> {
@@ -348,7 +367,11 @@ public class GeCopilotCloudPlugin extends Plugin {
             if (me.needsOnboarding) { panel.showGate(me.email); return; }
             panel.showMain(me.username, me.tier); maybeOnboard(me); return;
         }
-        if (!api.hasToken()) { tokenStore.clear(); showPreviewOrLogin(); return; } // 401 -> invalid
+        if (!api.hasToken()) { // 401 -> invalid; onConnState already showed "Signed out"
+            tokenStore.clear();
+            if (api.connState() != com.gecopilot.client.api.ApiClient.ConnState.SIGNED_OUT) showPreviewOrLogin();
+            return;
+        }
         if (attempt + 1 < RESTORE_ATTEMPTS) {
             executor.schedule(() -> tryRestore(attempt + 1), 5, TimeUnit.SECONDS);
         } else {

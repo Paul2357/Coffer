@@ -131,6 +131,7 @@ public class CloudPanel extends PluginPanel {
     // clipping off the edge of the ~225px panel — same technique as the assent block below.
     private final JTextArea gateError = new JTextArea(" ");
     private final JPanel accountBar = new JPanel(new BorderLayout());
+    private final JLabel connNotice = new JLabel();
     private final JPanel recapBanner = new JPanel(); // "since you last opened" session recap (hidden until shown)
     private final JPanel historyBanner = new JPanel(); // GE History import prompt (hidden until offered)
     private final JPanel onboardingBanner = new JPanel(); // one-time first-run guide (hidden until shown)
@@ -310,6 +311,15 @@ public class CloudPanel extends PluginPanel {
         whatsNewBanner.setAlignmentX(Component.LEFT_ALIGNMENT);
         whatsNewBanner.setMaximumSize(new Dimension(Integer.MAX_VALUE, Short.MAX_VALUE));
         whatsNewBanner.setVisible(false);
+        connNotice.setOpaque(true);
+        connNotice.setBackground(new Color(0x4a, 0x2a, 0x10));
+        connNotice.setForeground(Color.WHITE);
+        connNotice.setFont(FontManager.getRunescapeSmallFont());
+        connNotice.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
+        connNotice.setAlignmentX(Component.LEFT_ALIGNMENT);
+        connNotice.setMaximumSize(new Dimension(Integer.MAX_VALUE, 24));
+        connNotice.setVisible(false);
+        northStack.add(connNotice);
         northStack.add(accountBar);
         northStack.add(filters);
         northStack.add(header);
@@ -849,6 +859,15 @@ public class CloudPanel extends PluginPanel {
     }
     public void onSavePrefs(PrefsSaver cb) { this.onSavePrefs = cb != null ? cb : (b, s, p, a, r, mv, mm, mr, ft) -> {}; }
     public void onSaveGoal(GoalSaver cb) { this.onSaveGoal = cb != null ? cb : (g, d) -> {}; }
+
+    /** Visible outage banner above the tabs; null hides it. */
+    public void setConnNotice(String msg) {
+        SwingUtilities.invokeLater(() -> {
+            connNotice.setText(msg == null ? "" : msg);
+            connNotice.setVisible(msg != null);
+        });
+    }
+    String connNoticeText() { return connNotice.isVisible() ? connNotice.getText() : null; }
 
     public void showLogin(String error) {
         SwingUtilities.invokeLater(() -> {
