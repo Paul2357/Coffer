@@ -1563,9 +1563,14 @@ public class CloudPanel extends PluginPanel {
 
     /** Offer to import trades found in the in-game GE History that Coffer never recorded. */
     public void showHistoryImport(int n, Runnable onImport) {
+        showHistoryImport(n + " GE History trade" + (n == 1 ? "" : "s") + " not recorded", onImport);
+    }
+
+    /** Same banner with caller-supplied copy (missed trades, or recorded prices History disagrees with). */
+    public void showHistoryImport(String message, Runnable onImport) {
         SwingUtilities.invokeLater(() -> {
             historyBanner.removeAll();
-            JLabel l = new JLabel(n + " GE History trade" + (n == 1 ? "" : "s") + " not recorded");
+            JLabel l = new JLabel(message);
             l.setFont(FontManager.getRunescapeSmallFont());
             l.setForeground(ColorScheme.BRAND_ORANGE);
             l.setAlignmentX(Component.CENTER_ALIGNMENT);

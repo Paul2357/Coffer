@@ -49,19 +49,38 @@ public class OfferCaptureLoginReplayTest {
         assertNotNull(a);
         assertNotNull(b);
         assertNotEquals(a.fillKey, b.fillKey);
-        assertEquals("1:4000:444:B:100:100:15100", b.fillKey);
+        assertEquals("1:4000:444:B:100:100", b.fillKey);
+    }
+
+    @Test public void spentUpdatingOnTheSameOfferDoesNotRecordAgain() {
+        OfferCapture c = new OfferCapture();
+        c.onOffer(0, "BUYING", 5698, 26, 0, 0, 1_000);
+        // First observation: spent is still offer × qty (16,490 × 26).
+        CompletedFill first = c.onOffer(0, "BOUGHT", 5698, 26, 26, 16_490L * 26, 2_000);
+        assertNotNull(first);
+        assertEquals(16490, first.price);
+        // Spent later shows the coins that actually moved (16,440 × 26). Same offer.
+        assertNull(c.onOffer(0, "BOUGHT", 5698, 26, 26, 16_440L * 26, 2_100));
+        assertEquals("0:1000:5698:B:26:26", first.fillKey);
+    }
+
+    @Test public void oldSpentSuffixSigStillBlocksReplayAfterUpgrade() {
+        Map<Integer, String> sigs = new HashMap<>();
+        sigs.put(0, "5698:S:70:70:1247400"); // key minted when spent was part of the signature
+        OfferCapture c = new OfferCapture(sigs, m -> {});
+        assertNull(c.onOffer(0, "SOLD", 5698, 70, 70, 1_227_240L, 9_000));
     }
 
     @Test public void replayedFillKeepsTheSameKey() {
         OfferCapture c1 = new OfferCapture();
         c1.onOffer(3, "SELLING", 1917, 954, 0, 0, 7_000);
         CompletedFill a = c1.onOffer(3, "SOLD", 1917, 954, 954, 72_504, 8_000);
-        assertEquals("3:7000:1917:S:954:954:72504", a.fillKey);
+        assertEquals("3:7000:1917:S:954:954", a.fillKey);
     }
 
     @Test public void offerNeverSeenLiveGetsEpochZero() {
         OfferCapture c = new OfferCapture();
         CompletedFill f = c.onOffer(5, "BOUGHT", 1, 10, 10, 1000, 9_000);
-        assertEquals("5:0:1:B:10:10:1000", f.fillKey);
+        assertEquals("5:0:1:B:10:10", f.fillKey);
     }
 }

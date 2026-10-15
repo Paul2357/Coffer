@@ -17,6 +17,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * Each fill also carries a {@code fillKey} (slot, the time this client first saw the offer live,
  * and the signature) so the server can treat a re-post of the same fill as a no-op.
  *
+ * The signature deliberately excludes {@code spent}. A completed offer is often observed twice:
+ * once with {@code spent == offerPrice * qty} (the price the player typed) and again with the
+ * coins that actually moved, or a login replay of either. Those are the same fill. Putting
+ * {@code spent} in the key recorded the offer price and then a second row at the real price.
+ *
  * Thread-safety: GE events mutate {@link #open}/{@link #slotSig} on the client thread while the
  * poll thread reads via {@link #snapshot()} — both maps are concurrent so reads never throw CME.
  */
@@ -192,14 +197,25 @@ public class OfferCapture {
         if (!terminal(state) || qtySold <= 0) return null;
         epochLive.remove(slot);
 
-        String sig = itemId + ":" + (isBuy(state) ? "B" : "S") + ":" + totalQty + ":" + qtySold + ":" + spent;
-        if (sig.equals(slotSig.get(slot))) return null; // login replay of the same offer
+        // No spent: offer-price and actual-coins observations of one terminal offer must collapse.
+        String sig = itemId + ":" + (isBuy(state) ? "B" : "S") + ":" + totalQty + ":" + qtySold;
+        if (sameTerminal(slotSig.get(slot), sig)) return null;
         putSig(slot, sig);
 
         int avg = (int) Math.round((double) spent / qtySold);
         CompletedFill f = new CompletedFill(itemId, isBuy(state), qtySold, avg, ts);
         f.fillKey = fillKey(slot, sig);
         return f;
+    }
+
+    /**
+     * A stored signature is this offer when it equals {@code sig}, or when it is the pre-fix form
+     * that appended {@code :spent}. The prefix check keeps an upgraded client from re-recording an
+     * offer whose old key is still on disk.
+     */
+    static boolean sameTerminal(String stored, String sig) {
+        if (stored == null || sig == null) return false;
+        return stored.equals(sig) || stored.startsWith(sig + ":");
     }
 
     /** slot:epoch:signature. Epoch 0 when the offer was never seen live by this client. */

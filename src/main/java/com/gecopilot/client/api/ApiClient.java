@@ -365,6 +365,24 @@ public class ApiClient {
         } catch (Exception e) { return false; }
     }
 
+    /**
+     * Rewrite one of the user's own trades from the offer price to the GE History fill price.
+     * The server updates the newest row matching item/side/qty/fromPrice and no other user's row.
+     */
+    public boolean correctTrade(int itemId, boolean buy, int qty, int fromPrice, int toPrice) {
+        if (token == null) return false;
+        JsonObject b = new JsonObject();
+        b.addProperty("itemId", itemId);
+        b.addProperty("side", buy ? "BUY" : "SELL");
+        b.addProperty("qty", qty);
+        b.addProperty("fromPrice", fromPrice);
+        b.addProperty("toPrice", toPrice);
+        try (Response res = authed("/api/trades/correct", b.toString()).execute()) {
+            if (res.code() == 401) { token = null; return false; }
+            return res.isSuccessful();
+        } catch (Exception e) { return false; }
+    }
+
     /** Post a GE-History-recovered trade (source=history). Separate from live fills. */
     public boolean postHistoryTrade(int itemId, boolean buy, int qty, int price, long ts) {
         if (token == null) return false;
@@ -378,24 +396,29 @@ public class ApiClient {
         } catch (Exception e) { return false; }
     }
 
-    /** The user's recorded raw trades (GET /api/trades/mine), for GE History dedup. */
+    /**
+     * The user's recorded raw trades (GET /api/trades/mine), for GE History dedup.
+     * Null when the request failed — an empty list means the account really has no trades.
+     * Callers must not treat a failure as "nothing recorded", or History would import everything.
+     */
     public java.util.List<com.gecopilot.client.trade.GeHistoryReconcile.Recorded> recentTrades() {
-        java.util.List<com.gecopilot.client.trade.GeHistoryReconcile.Recorded> out = new ArrayList<>();
-        if (token == null) return out;
+        if (token == null) return null;
         Request req = new Request.Builder().url(baseUrl + "/api/trades/mine")
             .header("Authorization", "Bearer " + token).get().build();
         try (Response res = http.newCall(req).execute()) {
-            if (res.code() == 401) { token = null; return out; }
-            if (res.code() != 200 || res.body() == null) return out;
+            if (res.code() == 401) { token = null; return null; }
+            if (res.code() != 200 || res.body() == null) return null;
+            java.util.List<com.gecopilot.client.trade.GeHistoryReconcile.Recorded> out = new ArrayList<>();
             for (JsonElement e : gson.fromJson(res.body().string(), com.google.gson.JsonArray.class)) {
                 JsonObject o = e.getAsJsonObject();
                 var r = new com.gecopilot.client.trade.GeHistoryReconcile.Recorded();
                 r.itemId = o.get("itemId").getAsInt(); r.buy = o.get("buy").getAsBoolean();
                 r.qty = o.get("qty").getAsInt(); r.price = o.get("price").getAsInt();
+                r.ts = o.has("ts") && !o.get("ts").isJsonNull() ? o.get("ts").getAsLong() : 0L;
                 out.add(r);
             }
-        } catch (Exception ignored) { }
-        return out;
+            return out;
+        } catch (Exception ignored) { return null; }
     }
 
     /** Per-item quote for the GE offer-setup overlay. Returns null when unknown / not entitled (204). */

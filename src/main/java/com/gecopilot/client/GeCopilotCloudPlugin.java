@@ -582,6 +582,8 @@ public class GeCopilotCloudPlugin extends Plugin {
 
     @Inject private net.runelite.client.callback.ClientThread clientThread;
     private boolean historyHintDone = false;
+    /** One History import at a time. A second click re-plans after the first posts, so it can't insert twice. */
+    private final java.util.concurrent.atomic.AtomicBoolean historyImporting = new java.util.concurrent.atomic.AtomicBoolean();
     private volatile boolean wantHistoryHint = false;
     private boolean recapDone = false; // one-shot per JVM session, same idiom as historyHintDone
     // False until this session receives a GE offer event. Empty snapshots before that are "unknown",
@@ -630,23 +632,55 @@ public class GeCopilotCloudPlugin extends Plugin {
     private void reconcileHistory(java.util.List<com.gecopilot.client.trade.GeHistoryRow> rows) {
         if (!ensureLogin() || rows.isEmpty()) return;
         var recorded = api.recentTrades();
-        var missing = com.gecopilot.client.trade.GeHistoryReconcile.missing(rows, recorded);
-        if (missing.isEmpty()) { panel.hideHistoryImport(); return; } // clears any login hint too
-        log.debug("[Coffer] GE History: {} rows, {} recorded, {} to import", rows.size(), recorded.size(), missing.size());
-        panel.showHistoryImport(missing.size(), () -> importHistory(missing));
+        if (recorded == null) return; // failed fetch must not look like an empty account
+        var plan = com.gecopilot.client.trade.GeHistoryReconcile.plan(rows, recorded);
+        if (plan.imports.isEmpty() && plan.corrections.isEmpty()) { panel.hideHistoryImport(); return; }
+        log.debug("[Coffer] GE History: {} to import, {} prices to correct", plan.imports.size(), plan.corrections.size());
+        panel.showHistoryImport(com.gecopilot.client.trade.GeHistoryReconcile.prompt(plan), () -> importHistory(rows));
     }
 
-    private void importHistory(java.util.List<com.gecopilot.client.trade.GeHistoryRow> missing) {
+    private void importHistory(java.util.List<com.gecopilot.client.trade.GeHistoryRow> rows) {
+        if (!historyImporting.compareAndSet(false, true)) return;
         executor.execute(() -> {
-            // Order buys before sells and stamp ascending timestamps near now, so FIFO P&L matches a
-            // buy before its sell and imported trades sort after any already-recorded history.
-            java.util.List<com.gecopilot.client.trade.GeHistoryRow> ordered = new java.util.ArrayList<>();
-            for (var h : missing) if (h.buy) ordered.add(h);
-            for (var h : missing) if (!h.buy) ordered.add(h);
-            long ts = System.currentTimeMillis();
-            for (var h : ordered) { api.postHistoryTrade(h.itemId, h.buy, h.qty, h.unitPrice, ts); ts += 1000; }
-            panel.hideHistoryImport();
-            poll(); // refresh P&L / log
+            try {
+                // Re-plan against the server now. A second click, or a widget reload that captured the
+                // same rows before the first post landed, sees the updated prices and imports nothing.
+                var recorded = api.recentTrades();
+                if (recorded == null) {
+                    panel.showHistoryImport("Couldn't read recorded trades — try again", () -> importHistory(rows));
+                    return;
+                }
+                var plan = com.gecopilot.client.trade.GeHistoryReconcile.plan(rows, recorded);
+                if (plan.imports.isEmpty() && plan.corrections.isEmpty()) {
+                    panel.hideHistoryImport();
+                    return;
+                }
+                for (var c : plan.corrections) {
+                    if (!api.correctTrade(c.itemId, c.buy, c.qty, c.fromPrice, c.toPrice)) {
+                        panel.showHistoryImport(com.gecopilot.client.trade.GeHistoryReconcile.prompt(plan),
+                            () -> importHistory(rows));
+                        return;
+                    }
+                }
+                // Order buys before sells and stamp ascending timestamps near now, so FIFO P&L matches a
+                // buy before its sell and imported trades sort after any already-recorded history.
+                java.util.List<com.gecopilot.client.trade.GeHistoryRow> ordered = new java.util.ArrayList<>();
+                for (var h : plan.imports) if (h.buy) ordered.add(h);
+                for (var h : plan.imports) if (!h.buy) ordered.add(h);
+                long ts = System.currentTimeMillis();
+                for (var h : ordered) {
+                    if (!api.postHistoryTrade(h.itemId, h.buy, h.qty, h.unitPrice, ts)) {
+                        panel.showHistoryImport(com.gecopilot.client.trade.GeHistoryReconcile.prompt(plan),
+                            () -> importHistory(rows));
+                        return;
+                    }
+                    ts += 1000;
+                }
+                panel.hideHistoryImport();
+                poll(); // refresh P&L / log
+            } finally {
+                historyImporting.set(false);
+            }
         });
     }
 
