@@ -107,14 +107,17 @@ public class ApiClient {
     /** Coffer user id of the current session (the token's subject), or null when signed out. */
     public synchronized Long userId() { return subjectOf(token); }
 
-    /** The JWT's {@code sub} claim as a user id; null if absent or malformed. Not verified (the server does that). */
-    static Long subjectOf(String jwt) {
+    /**
+     * The JWT's {@code sub} claim as a user id; null if absent or malformed. Not verified (the server
+     * does that). Parses with the client's Gson: the Plugin Hub rejects plugins that create their own.
+     */
+    Long subjectOf(String jwt) {
         if (jwt == null) return null;
         String[] parts = jwt.split("\\.", -1);
         if (parts.length != 3) return null;
         try {
             String json = new String(java.util.Base64.getUrlDecoder().decode(parts[1]), java.nio.charset.StandardCharsets.UTF_8);
-            JsonElement sub = new Gson().fromJson(json, JsonObject.class).get("sub");
+            JsonElement sub = gson.fromJson(json, JsonObject.class).get("sub");
             return sub == null || sub.isJsonNull() ? null : Long.parseLong(sub.getAsString());
         } catch (RuntimeException e) {
             return null;

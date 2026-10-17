@@ -15,11 +15,11 @@ public class ApiClientUserIdTest {
     }
 
     @Test public void userIdIsTheTokenSubject() {
-        assertEquals(Long.valueOf(42), ApiClient.subjectOf(jwt("{\"sub\":\"42\",\"tier\":\"premium\"}")));
-        assertNull(ApiClient.subjectOf(jwt("{\"tier\":\"premium\"}")));
-        assertNull(ApiClient.subjectOf("not-a-jwt"));
-        assertNull(ApiClient.subjectOf(null));
         ApiClient api = new ApiClient(null, new com.google.gson.Gson(), "http://x");
+        assertEquals(Long.valueOf(42), api.subjectOf(jwt("{\"sub\":\"42\",\"tier\":\"premium\"}")));
+        assertNull(api.subjectOf(jwt("{\"tier\":\"premium\"}")));
+        assertNull(api.subjectOf("not-a-jwt"));
+        assertNull(api.subjectOf(null));
         assertNull(api.userId());
         api.setToken(jwt("{\"sub\":\"9\"}"));
         assertEquals(Long.valueOf(9), api.userId());
