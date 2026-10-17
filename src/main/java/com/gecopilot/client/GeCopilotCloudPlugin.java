@@ -251,6 +251,8 @@ public class GeCopilotCloudPlugin extends Plugin {
             }
         }));
         panel.onLogout(() -> {
+            // Queued fills/offer events stay queued but tagged with this login, so the next
+            // login (if it's someone else) can't post them (QueueOwnership).
             api.signOut(tokenStore::clear); // atomic vs a concurrent rolling-token save
             guideStage = null;
             guideFinished = false;
@@ -813,6 +815,7 @@ public class GeCopilotCloudPlugin extends Plugin {
             o.getTotalQuantity(), o.getQuantitySold(), o.getSpent(), now);
         if (fill != null) {
             fill.account = displayName; // attribute to the current account (null → server "Unknown")
+            fill.ownerId = captureOwner();
             pendingTrades.addLast(fill);
             savePending(); // durable before any post attempt, so a close/crash can't lose it
         }
@@ -820,6 +823,7 @@ public class GeCopilotCloudPlugin extends Plugin {
             OfferEvent offerEvent = journal.onState(ev.getSlot(), state, o.getItemId(),
                 o.getTotalQuantity(), o.getQuantitySold(), (int) o.getPrice(), now);
             if (offerEvent != null) {
+                offerEvent.ownerId = captureOwner();
                 synchronized (this) {
                     pendingEvents.addLast(offerEvent);
                     trimPendingEvents();
@@ -846,17 +850,41 @@ public class GeCopilotCloudPlugin extends Plugin {
         });
     }
 
-    /** Post queued fills in order; stop (keep the rest) on the first failure so nothing is lost. */
+    /**
+     * Coffer account a fill or offer event captured now belongs to: the current login, or while
+     * signed out the last login seen on this RS account (so a session that lapsed mid-trading
+     * keeps its fills, and nobody else can claim them). Null if this RS account never had one.
+     */
+    private Long captureOwner() {
+        Long uid = api.userId();
+        if (uid != null) return uid;
+        long acct = loadedAccount;
+        if (acct == Long.MIN_VALUE) return null;
+        String s = configManager.getConfiguration("gecopilotcloud", "lastCofferUser_" + acct);
+        try { return isBlank(s) ? null : Long.parseLong(s); } catch (NumberFormatException e) { return null; }
+    }
+
+    private void rememberOwner(long uid) {
+        long acct = loadedAccount;
+        if (acct == Long.MIN_VALUE) return;
+        String v = Long.toString(uid);
+        if (!v.equals(configManager.getConfiguration("gecopilotcloud", "lastCofferUser_" + acct)))
+            configManager.setConfiguration("gecopilotcloud", "lastCofferUser_" + acct, v);
+    }
+
+    /**
+     * Post this login's queued fills in order; stop (keep the rest) on the first failure so nothing
+     * is lost. Another login's fills stay queued for that login (see QueueOwnership).
+     */
     private synchronized void flushTrades() {
-        if (!api.hasToken()) return;
-        CompletedFill f;
-        boolean changed = false;
-        while ((f = pendingTrades.peekFirst()) != null) {
-            if (!api.postTrade(f.itemId, f.buy, f.qty, f.price, f.ts, f.account, f.fillKey)) break;
-            pendingTrades.pollFirst();
-            changed = true;
-        }
+        Long uid = api.userId();
+        if (uid == null) return;
+        rememberOwner(uid);
+        boolean changed = com.gecopilot.client.trade.QueueOwnership.drain(pendingTrades, uid, System.currentTimeMillis(),
+            f -> api.postTrade(f.itemId, f.buy, f.qty, f.price, f.ts, f.account, f.fillKey),
+            () -> uid.equals(api.userId()));
         if (changed) savePending(); // shrink the durable copy as fills are accepted
+        panel.setHeldFills(com.gecopilot.client.trade.QueueOwnership.heldForOthers(pendingTrades, uid));
     }
 
     // Durable pending-fill queue (per RS account): fills captured while logged-out/offline survive
@@ -866,22 +894,18 @@ public class GeCopilotCloudPlugin extends Plugin {
         configManager.setConfiguration("gecopilotcloud", "pendingTrades_" + loadedAccount,
             gson.toJson(new java.util.ArrayList<>(pendingTrades)));
     }
-    /** Post queued offer events. On failure the batch goes back, so a logged-out stretch keeps them. */
+    /** Post this login's queued offer events. On failure they stay, so a logged-out stretch keeps them. */
     private synchronized void flushOfferEvents() {
-        if (!api.hasToken() || pendingEvents.isEmpty()) return;
-        java.util.List<OfferEvent> batch = new java.util.ArrayList<>();
-        OfferEvent e;
-        while (batch.size() < 40 && (e = pendingEvents.pollFirst()) != null) batch.add(e);
-        if (batch.isEmpty()) return;
-        if (!api.postOfferEvents(batch)) {
-            for (int i = batch.size() - 1; i >= 0; i--) pendingEvents.addFirst(batch.get(i));
-            return;
-        }
-        saveEvents();
+        Long uid = api.userId();
+        if (uid == null || pendingEvents.isEmpty()) return;
+        boolean changed = com.gecopilot.client.trade.QueueOwnership.drainBatch(pendingEvents, uid, System.currentTimeMillis(), 40,
+            api::postOfferEvents, () -> uid.equals(api.userId()));
+        if (changed) saveEvents();
     }
 
     private synchronized void trimPendingEvents() {
-        while (pendingEvents.size() > MAX_PENDING_EVENTS) pendingEvents.pollFirst();
+        // Events held for another Coffer login go first, so they never push out this login's.
+        com.gecopilot.client.trade.QueueOwnership.trim(pendingEvents, MAX_PENDING_EVENTS, captureOwner());
     }
 
     private void maybeLogPlan(SyncResult sync) {

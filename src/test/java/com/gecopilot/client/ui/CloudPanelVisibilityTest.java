@@ -71,4 +71,21 @@ public class CloudPanelVisibilityTest {
         javax.swing.SwingUtilities.invokeAndWait(() -> { });
         assertArrayEquals(new int[]{255, 255, 255, 255}, p.figureAlphas());
     }
+
+    @Test public void heldFillsNoteIsQuietAndHiddenAtZero() throws Exception {
+        System.setProperty("java.awt.headless", "true");
+        CloudPanel[] holder = new CloudPanel[1];
+        javax.swing.SwingUtilities.invokeAndWait(() -> holder[0] = new CloudPanel(null));
+        CloudPanel p = holder[0];
+        assertNull(p.heldNoteText());
+        p.setHeldFills(3);
+        javax.swing.SwingUtilities.invokeAndWait(() -> { });
+        assertEquals("3 fills held for another Coffer login", p.heldNoteText());
+        p.setHeldFills(1);
+        javax.swing.SwingUtilities.invokeAndWait(() -> { });
+        assertEquals("1 fill held for another Coffer login", p.heldNoteText());
+        p.setHeldFills(0);
+        javax.swing.SwingUtilities.invokeAndWait(() -> { });
+        assertNull(p.heldNoteText());
+    }
 }

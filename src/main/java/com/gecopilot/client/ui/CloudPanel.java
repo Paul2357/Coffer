@@ -186,6 +186,8 @@ public class CloudPanel extends PluginPanel {
     private final JLabel feedbackStatus = new JLabel(" ");
     private String currentTier = "free";
     private final JLabel sessionToast = new JLabel(" ");
+    // Quiet note: fills captured under another Coffer login wait here (dropped after 7 days).
+    private final JLabel heldNote = new JLabel(" ");
     private Timer sessionToastTimer;
     private String sessionGuideText;
     private boolean sessionGuideDismissed;
@@ -347,6 +349,12 @@ public class CloudPanel extends PluginPanel {
         sessionToast.setVisible(false);
         sessionToast.setBorder(BorderFactory.createEmptyBorder(6, 8, 2, 8));
         northStack.add(sessionToast);
+        heldNote.setFont(FontManager.getRunescapeSmallFont());
+        heldNote.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+        heldNote.setAlignmentX(Component.LEFT_ALIGNMENT);
+        heldNote.setVisible(false);
+        heldNote.setBorder(BorderFactory.createEmptyBorder(4, 8, 2, 8));
+        northStack.add(heldNote);
         northStack.add(onboardingBanner);
         northStack.add(whatsNewBanner);
 
@@ -957,6 +965,19 @@ public class CloudPanel extends PluginPanel {
         });
     }
     String connNoticeText() { return connNotice.isVisible() ? connNotice.getText() : null; }
+
+    /** Quiet note for fills queued under another Coffer login; 0 hides it. */
+    public void setHeldFills(int n) {
+        SwingUtilities.invokeLater(() -> {
+            heldNote.setText(heldFillsText(n));
+            heldNote.setToolTipText(n > 0 ? "Sign in to that Coffer account within 7 days to keep them." : null);
+            heldNote.setVisible(n > 0);
+        });
+    }
+    static String heldFillsText(int n) {
+        return n <= 0 ? " " : n + (n == 1 ? " fill" : " fills") + " held for another Coffer login";
+    }
+    String heldNoteText() { return heldNote.isVisible() ? heldNote.getText() : null; }
 
     public void showLogin(String error) {
         SwingUtilities.invokeLater(() -> {
