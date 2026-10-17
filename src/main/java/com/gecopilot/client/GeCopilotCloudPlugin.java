@@ -27,6 +27,7 @@ import okhttp3.OkHttpClient;
 import lombok.extern.slf4j.Slf4j;
 
 import javax.inject.Inject;
+import javax.swing.SwingUtilities;
 import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
@@ -66,6 +67,10 @@ public class GeCopilotCloudPlugin extends Plugin {
     // buy that fills before login is never lost.
     private final java.util.concurrent.ConcurrentLinkedDeque<CompletedFill> pendingTrades = new java.util.concurrent.ConcurrentLinkedDeque<>();
     private volatile int quotedId = -1;   // last GE item we fetched an overlay quote for
+    // Paces the overlay quote fetch: one in flight per item, failures back off (1s doubling to 30s).
+    private final QuoteBackoff quoteBackoff = new QuoteBackoff();
+    // Poll cadence by panel visibility, and what a full vs light (hidden) refresh does.
+    private PollCycle pollCycle;
     // Cached on the client thread (onGameTick); read from background threads. client.getAccountHash()
     // must not be called off the client thread — doing so throws and aborts poll().
     private volatile long accountHash = -1;
@@ -126,6 +131,14 @@ public class GeCopilotCloudPlugin extends Plugin {
         capture = new OfferCapture(); // empty until the RS account is known (ensureAccountLoaded)
         journal = new OfferJournal();
         panel = new CloudPanel(itemManager);
+        pollCycle = new PollCycle(
+            new PollPolicy(() -> System.nanoTime() / 1_000_000L, this::clientMinimised), new SyncSteps());
+        // RuneLite calls these on the Swing thread when the Coffer tab is selected/deselected or the
+        // sidebar is expanded/collapsed. Flip visibility right away; opening refreshes everything now.
+        panel.onVisibility(visible -> {
+            pollCycle.policy().setPanelVisible(visible);
+            if (visible) openRefresh();
+        });
         panel.onLogTabSelected(() -> executor.execute(this::loadLog));
         panel.onAccountChange(acct -> {
             api.setAccount(acct);
@@ -316,7 +329,8 @@ public class GeCopilotCloudPlugin extends Plugin {
         clientToolbar.addNavigation(navButton);
         overlay = new GeOfferOverlay(client, config::priceWarnings, config::minMargin, config::minRoi);
         overlayManager.add(overlay);
-        pollFuture = executor.scheduleWithFixedDelay(this::poll, 0, 60, TimeUnit.SECONDS);
+        SwingUtilities.invokeLater(this::watchFrame);
+        pollFuture = executor.scheduleWithFixedDelay(this::pollTick, 0, PollPolicy.TICK_MS, TimeUnit.MILLISECONDS);
         executor.execute(this::restoreSession);
     }
 
@@ -387,6 +401,7 @@ public class GeCopilotCloudPlugin extends Plugin {
         // only stop our own tasks) so nothing keeps firing after the plugin is disabled.
         if (pollFuture != null) pollFuture.cancel(false);
         if (refreshFuture != null) refreshFuture.cancel(false);
+        SwingUtilities.invokeLater(this::unwatchFrame);
         clientToolbar.removeNavigation(navButton);
         overlayManager.remove(overlay);
     }
@@ -397,15 +412,21 @@ public class GeCopilotCloudPlugin extends Plugin {
         if (client.getLocalPlayer() != null && client.getLocalPlayer().getName() != null)
             displayName = client.getLocalPlayer().getName();
         int id = client.getVarpValue(1151); // CURRENT_GE_ITEM
-        if (id <= 0) { quotedId = -1; return; }
+        if (id <= 0) { quotedId = -1; quoteBackoff.reset(); return; }
         if (id == quotedId) return;         // already have a quote for this item
+        if (!ensureLogin()) return;
+        // One request in flight per item; a failure (e.g. Render cold start / 204) retries after a
+        // backoff instead of every tick, so the overlay still recovers without flooding the server.
+        if (!quoteBackoff.tryStart(id, System.nanoTime() / 1_000_000L)) return;
         executor.execute(() -> {
-            if (!ensureLogin()) return;
-            com.gecopilot.client.api.QuoteDto q = api.quote(id);
+            com.gecopilot.client.api.QuoteDto q;
+            try {
+                // null on failure or if the player moved on; the in-flight mark always clears
+                q = quoteBackoff.attempt(id, () -> api.quote(id), () -> System.nanoTime() / 1_000_000L);
+            } catch (Exception e) { log.debug("[Coffer] quote failed", e); return; }
+            if (q == null) return;
             overlay.setQuote(q);
-            // Only cache on success, so a transient failure (e.g. Render cold start / 204)
-            // retries next tick instead of leaving the overlay stuck hidden forever.
-            if (q != null) quotedId = id;
+            quotedId = id;
         });
     }
 
@@ -507,23 +528,94 @@ public class GeCopilotCloudPlugin extends Plugin {
         return api.hasToken();
     }
 
+    /** The 60s timer: every tick while the panel is on screen, every 10 min while it is hidden. */
+    private void pollTick() {
+        if (watchedFrame == null) SwingUtilities.invokeLater(this::watchFrame); // frame may appear after startUp
+        try { ensureAccountLoaded(); } catch (Exception e) { log.warn("[Coffer] ensureAccountLoaded failed", e); }
+        safeSync(pollCycle::onTick);
+    }
+
+    /** An immediate refresh (user action, login). Full while the panel is on screen, light while hidden. */
     private void poll() {
         try { ensureAccountLoaded(); } catch (Exception e) { log.warn("[Coffer] ensureAccountLoaded failed", e); }
         syncAndRender();
     }
 
-    /** Pull a fresh sync + dashboard and repaint. Shared by the 60s poll and the debounced
+    /** Sync and repaint; the depth follows panel visibility. Shared by user actions and the debounced
      *  offer-change refresh. */
     private void syncAndRender() {
+        safeSync(pollCycle::refresh);
+    }
+
+    /** Panel came on screen: keep the last data up, cue "Updating…", and refresh everything now. */
+    private void openRefresh() {
+        if (!ensureLogin()) return; // signed out: the login/preview card is showing, nothing to refresh
+        panel.beginRefresh();
+        executor.execute(() -> safeSync(pollCycle::refreshFull));
+    }
+
+    /** Never let a failed sync escape: an exception would cancel the fixed-delay timer. */
+    private void safeSync(Runnable r) {
+        try { r.run(); } catch (Exception e) { log.warn("[Coffer] sync failed", e); }
+    }
+
+    /** The client window is minimised (iconified). Read off the client thread: a plain frame-state read. */
+    private boolean clientMinimised() {
+        java.awt.Frame f = clientFrame();
+        return f != null && (f.getExtendedState() & java.awt.Frame.ICONIFIED) != 0;
+    }
+
+    private java.awt.Frame clientFrame() {
         try {
-            if (!ensureLogin()) { log.debug("[Coffer] sync: not logged in (no token) — skipping"); return; }
-            // One-shot per JVM session, and MUST run before flushTrades()/api.sync() below (POST
+            java.awt.Canvas canvas = client.getCanvas();
+            java.awt.Window w = canvas != null ? SwingUtilities.getWindowAncestor(canvas) : null;
+            return w instanceof java.awt.Frame ? (java.awt.Frame) w : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    // Restoring a minimised client refreshes at once, like opening the panel; minimising needs no
+    // hook, since the policy reads the frame state on every tick.
+    private volatile java.awt.Frame watchedFrame;
+    private final java.awt.event.WindowStateListener restoreListener = e -> {
+        boolean minimised = (e.getNewState() & java.awt.Frame.ICONIFIED) != 0;
+        if (pollCycle.policy().onWindowState(minimised)) openRefresh();
+    };
+
+    private void watchFrame() { // EDT
+        if (watchedFrame != null) return;
+        java.awt.Frame f = clientFrame();
+        if (f == null) return;
+        f.addWindowStateListener(restoreListener);
+        watchedFrame = f;
+    }
+
+    private void unwatchFrame() { // EDT
+        java.awt.Frame f = watchedFrame;
+        if (f != null) f.removeWindowStateListener(restoreListener);
+        watchedFrame = null;
+    }
+
+    /** What a refresh does against the server; {@link PollCycle} decides which steps run. */
+    private final class SyncSteps implements PollCycle.Steps {
+        @Override public boolean ready() {
+            if (ensureLogin()) return true;
+            log.debug("[Coffer] sync: not logged in (no token) — skipping");
+            return false;
+        }
+        @Override public void beforeSync() {
+            // One-shot per JVM session, and MUST run before flushTrades()/api.sync() (POST
             // /api/flips overwrites last_seen via touchLastSeen) — otherwise the recap always reads
             // its own just-updated last_seen and shows zeros.
             if (!recapDone) { recapDone = true; fetchRecap(); }
             if (wantHistoryHint) { wantHistoryHint = false; if (!recapShown) panel.showHistoryHint(); }
+        }
+        @Override public void flushQueues() {
             flushTrades(); // retry any fills captured while logged out
             flushOfferEvents();
+        }
+        @Override public SyncResult sync() {
             SyncResult sync = api.sync(config.bankroll(), config.slots(), config.pace(), config.access(),
                 config.minVolume(), config.minMargin(), config.minRoi(), config.fillTarget(),
                 capture.snapshot(), geObserved);
@@ -539,16 +631,24 @@ public class GeCopilotCloudPlugin extends Plugin {
             log.debug("[Coffer] sync: flips={} watch={} positions={} tier={}",
                 sync.flips.size(), sync.watch.size(), sync.positions.size(), sync.tier);
             lastWatch = sync.watch;
+            return sync;
+        }
+        @Override public Dashboard dashboard() {
             Dashboard dash = api.dashboard();
             lastGoal = dash != null ? dash.goal : null;
+            return dash;
+        }
+        @Override public void render(SyncResult sync, Dashboard dash) {
             panel.update(sync, dash, guideStage == null ? SessionGuide.Stage.DONE : guideStage);
-            maybeLogPlan(sync);
-            nudge(sync);
-        } catch (Exception e) { log.warn("[Coffer] sync failed", e); }
+        }
+        @Override public void logPlan(SyncResult sync) { maybeLogPlan(sync); }
+        @Override public void nudge(SyncResult sync) { GeCopilotCloudPlugin.this.nudge(sync); }
+        @Override public void done(boolean ok) { panel.refreshDone(ok); }
     }
 
     // Coalesced refresh: GE events can burst (login replay = 8 at once), so debounce to one sync
-    // ~1.5s after the last change instead of syncing per event or waiting for the 60s poll.
+    // ~1.5s after the last change instead of syncing per event or waiting for the next poll.
+    // Follows the same visibility rule as the timer: light (no dashboard / plan-shown) while hidden.
     private volatile java.util.concurrent.ScheduledFuture<?> refreshFuture;
     private synchronized void scheduleRefresh() {
         if (refreshFuture != null) refreshFuture.cancel(false);

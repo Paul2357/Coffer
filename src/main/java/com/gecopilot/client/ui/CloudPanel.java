@@ -42,6 +42,14 @@ public class CloudPanel extends PluginPanel {
     private final JComboBox<String> accountBox = new JComboBox<>(new String[]{"All accounts"});
     private boolean populatingAccounts = false;
     private java.util.function.Consumer<String> onAccountChange = a -> {};
+    // Panel on screen (tab selected and sidebar expanded). RuneLite drives it via onActivate/onDeactivate.
+    private volatile boolean active = false;
+    // Header cue for the refresh that runs when the panel reopens. Swing state: EDT only.
+    private final JLabel refreshStatus = new JLabel(" ");
+    private RefreshStatus.State refreshState = RefreshStatus.State.IDLE;
+    private long lastRefreshOkMs = 0;
+    private boolean figuresDimmed; // headline figures drawn at DIM_ALPHA while a refresh runs. EDT only.
+    private java.util.function.Consumer<Boolean> onVisibility = v -> {};
     private final JLabel fillRateValue = new JLabel("-");
     private final JLabel goalLine = new JLabel("Set a profit goal in Settings");
 
@@ -249,6 +257,13 @@ public class CloudPanel extends PluginPanel {
         JLabel ver = caption("COFFER v" + com.gecopilot.client.ServerConfig.VERSION);
         gc.gridy = 4; gc.insets = new Insets(8, 0, 0, 0);
         header.add(ver, gc);
+        // Refresh cue: same muted caption style, on its own row under the version (sharing the version
+        // row would truncate it in the narrow sidebar). The row is always there and blank until the
+        // first refresh, so switching states never moves anything.
+        refreshStatus.setFont(FontManager.getRunescapeSmallFont());
+        refreshStatus.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+        gc.gridy = 5; gc.insets = new Insets(2, 0, 0, 0);
+        header.add(refreshStatus, gc);
 
         // Scope filters above the stat card, one row: account dropdown (left, shown only with 2+
         // accounts) + compact segmented period buttons. Kept OUT of the P&L number's grid row so a
@@ -839,6 +854,80 @@ public class CloudPanel extends PluginPanel {
         });
     }
     public void onLogout(Runnable cb) { this.onLogout = cb != null ? cb : () -> {}; }
+    /**
+     * A full refresh started (panel reopened or client restored). The last dashboard stays on screen;
+     * the header says "Updating…" and the figures dim to ~55% until the refresh finishes.
+     */
+    public void beginRefresh() {
+        SwingUtilities.invokeLater(() -> {
+            refreshState = RefreshStatus.State.UPDATING;
+            dimFigures(true);
+            showRefreshStatus();
+        });
+    }
+
+    /** A refresh finished. {@code ok}: the server answered; otherwise the header says how old the data is. */
+    public void refreshDone(boolean ok) {
+        long now = System.currentTimeMillis();
+        SwingUtilities.invokeLater(() -> {
+            if (ok) lastRefreshOkMs = now;
+            refreshState = ok ? RefreshStatus.State.OK : RefreshStatus.State.FAILED;
+            dimFigures(false);
+            showRefreshStatus();
+        });
+    }
+
+    String refreshStatusText() { return refreshStatus.getText(); }
+
+    private void showRefreshStatus() {
+        refreshStatus.setText(RefreshStatus.text(refreshState, lastRefreshOkMs, System.currentTimeMillis()));
+    }
+
+    /** Alpha for the headline figures while a refresh runs: ~55%, readable but clearly stale. */
+    static final int DIM_ALPHA = 140;
+
+    private JLabel[] figures() { return new JLabel[]{pnl, flipsValue, fillRateValue, goalLine}; }
+
+    /** Dims or restores every headline figure, keeping each one's current colour. */
+    private void dimFigures(boolean dim) {
+        if (dim == figuresDimmed) return;
+        figuresDimmed = dim;
+        for (JLabel f : figures()) setFigureColor(f, f.getForeground());
+    }
+
+    /**
+     * Colour a headline figure. While dimmed the colour gets DIM_ALPHA, so a figure recoloured
+     * mid-refresh (P&L turning red, the goal line going orange) stays dimmed with the rest.
+     */
+    private void setFigureColor(JLabel f, Color c) {
+        f.setForeground(new Color(c.getRed(), c.getGreen(), c.getBlue(), figuresDimmed ? DIM_ALPHA : 255));
+    }
+
+    /** Test hook: the alpha each headline figure is drawn with. */
+    int[] figureAlphas() {
+        JLabel[] f = figures();
+        int[] out = new int[f.length];
+        for (int i = 0; i < f.length; i++) out[i] = f[i].getForeground().getAlpha();
+        return out;
+    }
+
+    /** Called with true when the panel comes on screen and false when it leaves (Swing thread). */
+    public void onVisibility(java.util.function.Consumer<Boolean> cb) { this.onVisibility = cb != null ? cb : v -> {}; }
+    public boolean isActive() { return active; }
+
+    @Override
+    public void onActivate() {
+        super.onActivate();
+        active = true;
+        onVisibility.accept(true);
+    }
+
+    @Override
+    public void onDeactivate() {
+        super.onDeactivate();
+        active = false;
+        onVisibility.accept(false);
+    }
     public void onSaveAlerts(AlertSaver cb) { this.onSaveAlerts = cb != null ? cb : (w, e, r, p, c, cd, qe, qs, qn) -> {}; }
     public void onTestAlert(Runnable cb) { this.onTestAlert = cb != null ? cb : () -> {}; }
     public void setAlertStatus(String text) {
@@ -1456,7 +1545,7 @@ public class CloudPanel extends PluginPanel {
                 fillRateValue.setText(dash.fillRate != null ? dash.fillRate : "-");
                 GoalDto g = dash.goal;
                 goalLine.setText(goalText(g));
-                goalLine.setForeground(g != null && g.goalGp > 0 && g.onTrack != null
+                setFigureColor(goalLine, g != null && g.goalGp > 0 && g.onTrack != null
                     ? (g.onTrack ? ColorScheme.PROGRESS_COMPLETE_COLOR : ColorScheme.BRAND_ORANGE) : BLUE);
                 updateMilestoneLine(dash);
             }
@@ -1513,7 +1602,7 @@ public class CloudPanel extends PluginPanel {
         long gp = (w != null) ? w.gp : d.realized;      // fall back to lifetime if the server is old
         int flips = (w != null) ? w.flips : d.flips;
         pnl.setText((gp >= 0 ? "+" : "") + GP.format(gp) + " gp");
-        pnl.setForeground(gp >= 0 ? ColorScheme.PROGRESS_COMPLETE_COLOR : ColorScheme.PROGRESS_ERROR_COLOR);
+        setFigureColor(pnl, gp >= 0 ? ColorScheme.PROGRESS_COMPLETE_COLOR : ColorScheme.PROGRESS_ERROR_COLOR);
         flipsValue.setText(String.valueOf(flips));
     }
 
