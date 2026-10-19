@@ -49,6 +49,7 @@ public class GeCopilotCloudPlugin extends Plugin {
     @Inject private OverlayManager overlayManager;
     @Inject private ItemManager itemManager;
     @Inject private ConfigManager configManager;
+    @Inject private net.runelite.client.chat.ChatMessageManager chatMessageManager;
 
     private CloudPanel panel;
     private NavigationButton navButton;
@@ -71,6 +72,8 @@ public class GeCopilotCloudPlugin extends Plugin {
     private final QuoteBackoff quoteBackoff = new QuoteBackoff();
     // Poll cadence by panel visibility, and what a full vs light (hidden) refresh does.
     private PollCycle pollCycle;
+    // Service-status banner and its /api/status cadence; while degraded it also paces the main poll.
+    private StatusMonitor statusMonitor;
     // Cached on the client thread (onGameTick); read from background threads. client.getAccountHash()
     // must not be called off the client thread — doing so throws and aborts poll().
     private volatile long accountHash = -1;
@@ -133,6 +136,7 @@ public class GeCopilotCloudPlugin extends Plugin {
         panel = new CloudPanel(itemManager);
         pollCycle = new PollCycle(
             new PollPolicy(() -> System.nanoTime() / 1_000_000L, this::clientMinimised), new SyncSteps());
+        statusMonitor = new StatusMonitor(pollCycle.policy(), () -> System.nanoTime() / 1_000_000L);
         // RuneLite calls these on the Swing thread when the Coffer tab is selected/deselected or the
         // sidebar is expanded/collapsed. Flip visibility right away; opening refreshes everything now.
         panel.onVisibility(visible -> {
@@ -530,11 +534,41 @@ public class GeCopilotCloudPlugin extends Plugin {
         return api.hasToken();
     }
 
-    /** The 60s timer: every tick while the panel is on screen, every 10 min while it is hidden. */
+    /**
+     * The 60s timer: every tick while the panel is on screen, every 10 min while it is hidden. The
+     * service status is checked on its own slower cadence; while Coffer is degraded the regular poll
+     * pauses and runs once per backed-off check instead (see {@link StatusMonitor#tick}).
+     */
     private void pollTick() {
         if (watchedFrame == null) SwingUtilities.invokeLater(this::watchFrame); // frame may appear after startUp
         try { ensureAccountLoaded(); } catch (Exception e) { log.warn("[Coffer] ensureAccountLoaded failed", e); }
-        safeSync(pollCycle::onTick);
+        try {
+            statusMonitor.tick(() -> safeSync(pollCycle::onTick), () -> safeSync(pollCycle::refresh),
+                () -> StatusMonitor.withOwnCalls(api.status(), api.connState() == ApiClient.ConnState.UNREACHABLE),
+                this::applyStatus);
+        } catch (Exception e) { log.warn("[Coffer] status tick failed", e); }
+    }
+
+    private void applyStatus(StatusMonitor.Update u) {
+        if (u.changed) panel.setServiceStatus(u.banner);
+        if (u.chatNotice != null && config.statusChatNotice()) chatNotice(u.banner);
+        if (u.recovered) log.debug("[Coffer] service recovered; regular poll resumes");
+    }
+
+    /** One chat line per distinct notice per session. */
+    private void chatNotice(StatusMonitor.Banner b) {
+        chatMessageManager.queue(net.runelite.client.chat.QueuedMessage.builder()
+            .type(net.runelite.api.ChatMessageType.CONSOLE)
+            .runeLiteFormattedMessage(chatLine(b.text))
+            .build());
+    }
+
+    /** ChatMessageBuilder.append(String) runs Text.escapeJagex, so a '<' or '>' from the server can't open a tag. */
+    static String chatLine(String text) {
+        return new net.runelite.client.chat.ChatMessageBuilder()
+            .append(net.runelite.client.chat.ChatColorType.HIGHLIGHT).append("Coffer: ")
+            .append(net.runelite.client.chat.ChatColorType.NORMAL).append(text)
+            .build();
     }
 
     /** An immediate refresh (user action, login). Full while the panel is on screen, light while hidden. */

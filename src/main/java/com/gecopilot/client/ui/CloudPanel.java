@@ -381,14 +381,55 @@ public class CloudPanel extends PluginPanel {
         settingsCard.setLayout(new BoxLayout(settingsCard, BoxLayout.Y_AXIS));
         settingsCard.setBackground(ColorScheme.DARK_GRAY_COLOR);
         settingsCard.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
-        add(buildLogin(), "login");
-        add(main, "main");
+        add(withStatus(buildLogin()), "login");
+        add(withStatus(main), "main");
         add(settingsCard, "settings");
-        add(buildPreview(), "preview");
-        add(buildReset(), "reset");
-        add(buildGate(), "gate");
+        add(withStatus(buildPreview()), "preview");
+        add(withStatus(buildReset()), "reset");
+        add(withStatus(buildGate()), "gate");
         rootCards.show(this, "login");
     }
+
+    // Service-status banner: one per card (a component can sit in only one card), all showing the
+    // same state. Settings has none; it is a short detour from the main card.
+    private final List<StatusBanner> statusBanners = new ArrayList<>();
+    private boolean statusShowing = false; // EDT only
+    private String connNoticeMsg = null;   // EDT only
+
+    private JPanel withStatus(JPanel card) {
+        StatusBanner b = new StatusBanner();
+        statusBanners.add(b);
+        JPanel north = new JPanel(new BorderLayout());
+        north.setBackground(ColorScheme.DARK_GRAY_COLOR);
+        north.setBorder(BorderFactory.createEmptyBorder(8, 8, 0, 8));
+        north.add(b, BorderLayout.CENTER);
+        north.setVisible(false); // shown with the banner (setServiceStatus), so no gap while clear
+        JPanel wrap = new JPanel(new BorderLayout());
+        wrap.setBackground(ColorScheme.DARK_GRAY_COLOR);
+        wrap.add(north, BorderLayout.NORTH);
+        wrap.add(card, BorderLayout.CENTER);
+        return wrap;
+    }
+
+    /**
+     * Show or clear the service-status banner on every card. While it shows, the smaller
+     * "Can't reach Coffer" notice stays hidden: the banner already says so.
+     */
+    public void setServiceStatus(StatusMonitor.Banner b) {
+        SwingUtilities.invokeLater(() -> {
+            for (StatusBanner sb : statusBanners) {
+                sb.show(b);
+                sb.getParent().setVisible(b != null);
+            }
+            statusShowing = b != null;
+            applyConnNotice();
+            revalidate();
+            repaint();
+        });
+    }
+
+    /** Test hook: the banner text, or null when hidden. */
+    String serviceStatusText() { return statusBanners.isEmpty() ? null : statusBanners.get(0).shownText(); }
 
     private JPanel buildLogin() {
         JPanel p = new JPanel();
@@ -553,7 +594,7 @@ public class CloudPanel extends PluginPanel {
     /** Plugin Hub disallows programmatically opening a browser (LinkBrowser.open / Desktop.open
      *  are both restricted APIs). Copy the URL to the clipboard instead and flash a confirmation
      *  on the label so the user knows where to paste it. */
-    private static void copyLinkToClipboard(String url, JLabel label, String originalText) {
+    static void copyLinkToClipboard(String url, JLabel label, String originalText) {
         Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(url), null);
         label.setText("Link copied — paste in your browser");
         Timer revert = new Timer(1800, e -> label.setText(originalText));
@@ -960,9 +1001,14 @@ public class CloudPanel extends PluginPanel {
     /** Visible outage banner above the tabs; null hides it. */
     public void setConnNotice(String msg) {
         SwingUtilities.invokeLater(() -> {
-            connNotice.setText(msg == null ? "" : msg);
-            connNotice.setVisible(msg != null);
+            connNoticeMsg = msg;
+            applyConnNotice();
         });
+    }
+
+    private void applyConnNotice() {
+        connNotice.setText(connNoticeMsg == null ? "" : connNoticeMsg);
+        connNotice.setVisible(connNoticeMsg != null && !statusShowing);
     }
     String connNoticeText() { return connNotice.isVisible() ? connNotice.getText() : null; }
 

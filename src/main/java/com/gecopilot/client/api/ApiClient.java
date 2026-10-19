@@ -98,6 +98,11 @@ public class ApiClient {
 
     public ApiClient(OkHttpClient http, Gson gson, String baseUrl) {
         this.http = http == null ? null : http.newBuilder().addInterceptor(this::observe).build();
+        // Same client, shorter deadline (a check that hangs is itself the answer), and without the
+        // conn-state interceptor: a reachable /api/status must not clear the "unreachable" state that
+        // a failing authed call just set.
+        this.statusHttp = http == null ? null : http.newBuilder()
+            .callTimeout(STATUS_TIMEOUT_SEC, java.util.concurrent.TimeUnit.SECONDS).build();
         this.gson = gson;
         this.baseUrl = baseUrl.replaceAll("/+$", "");
     }
@@ -652,6 +657,30 @@ public class ApiClient {
         try (Response res = http.newCall(req).execute()) {
             if (res.code() != 200 || res.body() == null) return null;
             return gson.fromJson(res.body().string(), AlertsStatus.class);
+        } catch (Exception e) { return null; }
+    }
+
+    static final int STATUS_TIMEOUT_SEC = 20;
+    static final long STATUS_MAX_BYTES = 8 * 1024;
+    private final OkHttpClient statusHttp;
+
+    /**
+     * Unauthenticated GET /api/status (DB-free on the server). Null when the server can't be reached:
+     * a connection error, a timeout, or a 5xx. A server without the endpoint (a 0.1.29 server answers
+     * 401) or an unreadable body is reachable with nothing to say: an empty status.
+     */
+    public ServiceStatusDto status() {
+        Request req = new Request.Builder().url(baseUrl + "/api/status").get().build();
+        try (Response res = statusHttp.newCall(req).execute()) {
+            if (res.code() >= 500) return null;
+            if (!res.isSuccessful() || res.body() == null) return new ServiceStatusDto();
+            try {
+                // Capped read: a status is a few hundred bytes; anything past the cap fails to parse.
+                ServiceStatusDto s = gson.fromJson(res.peekBody(STATUS_MAX_BYTES).string(), ServiceStatusDto.class);
+                return s != null ? s : new ServiceStatusDto();
+            } catch (RuntimeException parse) {
+                return new ServiceStatusDto();
+            }
         } catch (Exception e) { return null; }
     }
 

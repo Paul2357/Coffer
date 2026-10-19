@@ -50,4 +50,8 @@ public interface GeCopilotCloudConfig extends Config {
     @ConfigItem(keyName = "priceWarnings", name = "Offer price warnings", position = 1,
         description = "On the GE offer screen, warn when a sell is below what buyers are paying now, a buy is above the market high, or a buy's after-tax margin is too thin to flip")
     default boolean priceWarnings() { return true; }
+
+    @ConfigItem(keyName = "statusChatNotice", name = "Service notices in chat", position = 2,
+        description = "When Coffer posts a service notice (maintenance, an outage), also say it once in the chatbox. The panel banner shows either way")
+    default boolean statusChatNotice() { return true; }
 }
