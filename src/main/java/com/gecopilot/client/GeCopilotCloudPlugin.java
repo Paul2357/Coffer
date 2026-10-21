@@ -4,6 +4,7 @@ import com.gecopilot.client.api.*;
 import com.gecopilot.client.trade.*;
 import com.gecopilot.client.ui.CloudPanel;
 import com.gecopilot.client.ui.GeOfferOverlay;
+import com.gecopilot.client.ui.OfferChartOverlay;
 import com.gecopilot.client.ui.SessionGuide;
 import com.google.gson.Gson;
 import com.google.inject.Provides;
@@ -18,6 +19,7 @@ import net.runelite.client.Notifier;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.game.ItemManager;
+import net.runelite.client.input.MouseManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.ClientToolbar;
@@ -47,6 +49,7 @@ public class GeCopilotCloudPlugin extends Plugin {
     @Inject private Notifier notifier;
     @Inject private Client client;
     @Inject private OverlayManager overlayManager;
+    @Inject private MouseManager mouseManager;
     @Inject private ItemManager itemManager;
     @Inject private ConfigManager configManager;
     @Inject private net.runelite.client.chat.ChatMessageManager chatMessageManager;
@@ -54,6 +57,7 @@ public class GeCopilotCloudPlugin extends Plugin {
     private CloudPanel panel;
     private NavigationButton navButton;
     private GeOfferOverlay overlay;
+    private volatile OfferChartOverlay chartOverlay; // created in startUp(), removed in shutDown()
     private ApiClient api;
     private java.util.concurrent.ScheduledFuture<?> pollFuture; // cancelled in shutDown()
     private volatile OfferCapture capture; // built in startUp(); read from poll + GE-event threads
@@ -335,6 +339,10 @@ public class GeCopilotCloudPlugin extends Plugin {
         clientToolbar.addNavigation(navButton);
         overlay = new GeOfferOverlay(client, config::priceWarnings, config::minMargin, config::minRoi);
         overlayManager.add(overlay);
+        TimeseriesCache timeseries = new TimeseriesCache(new WikiTimeseries(http, gson), () -> System.nanoTime() / 1_000_000L);
+        chartOverlay = new OfferChartOverlay(client, timeseries, config::offerChart);
+        overlayManager.add(chartOverlay);
+        mouseManager.registerMouseListener(chartOverlay.mouseListener());
         SwingUtilities.invokeLater(this::watchFrame);
         pollFuture = executor.scheduleWithFixedDelay(this::pollTick, 0, PollPolicy.TICK_MS, TimeUnit.MILLISECONDS);
         executor.execute(this::restoreSession);
@@ -410,6 +418,11 @@ public class GeCopilotCloudPlugin extends Plugin {
         SwingUtilities.invokeLater(this::unwatchFrame);
         clientToolbar.removeNavigation(navButton);
         overlayManager.remove(overlay);
+        if (chartOverlay != null) {
+            mouseManager.unregisterMouseListener(chartOverlay.mouseListener());
+            overlayManager.remove(chartOverlay);
+            chartOverlay = null;
+        }
     }
 
     @Subscribe
@@ -417,7 +430,9 @@ public class GeCopilotCloudPlugin extends Plugin {
         accountHash = client.getAccountHash(); // client-thread read; ensureAccountLoaded uses the cache
         if (client.getLocalPlayer() != null && client.getLocalPlayer().getName() != null)
             displayName = client.getLocalPlayer().getName();
-        int id = client.getVarpValue(1151); // CURRENT_GE_ITEM
+        // The setup screen's item, or the selected slot's active offer on Offer status (so the chart's
+        // Coffer lines have a quote there too). Still one quote per item, cached in quotedId.
+        int id = OfferChartOverlay.activeItemId(client);
         if (id <= 0) { quotedId = -1; quoteBackoff.reset(); return; }
         if (id == quotedId) return;         // already have a quote for this item
         if (!ensureLogin()) return;
@@ -432,6 +447,8 @@ public class GeCopilotCloudPlugin extends Plugin {
             } catch (Exception e) { log.debug("[Coffer] quote failed", e); return; }
             if (q == null) return;
             overlay.setQuote(q);
+            OfferChartOverlay chart = chartOverlay;
+            if (chart != null) chart.setQuote(q);
             quotedId = id;
         });
     }

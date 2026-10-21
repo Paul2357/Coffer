@@ -54,4 +54,8 @@ public interface GeCopilotCloudConfig extends Config {
     @ConfigItem(keyName = "statusChatNotice", name = "Service notices in chat", position = 2,
         description = "When Coffer posts a service notice (maintenance, an outage), also say it once in the chatbox. The panel banner shows either way")
     default boolean statusChatNotice() { return true; }
+
+    @ConfigItem(keyName = "offerChart", name = "GE offer price chart", position = 3,
+        description = "On the GE offer and offer status screens, show the item's price history with your offer price and Coffer's suggested buy and sell. The chart covers the chatbox while those screens are open")
+    default boolean offerChart() { return true; }
 }

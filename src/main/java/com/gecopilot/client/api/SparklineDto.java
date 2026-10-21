@@ -13,5 +13,7 @@ public class SparklineDto {
         public long ts;
         public long high, low;
         public double mid;
+        /** Trade counts behind high/low; only the wiki timeseries fills these (0 otherwise). */
+        public long highVol, lowVol;
     }
 }
