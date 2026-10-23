@@ -71,6 +71,14 @@ public class ApiClient {
         return res;
     }
 
+    /** Plugin version on every Coffer request, so the server can tell which clients need updating. */
+    public static final String VERSION_HEADER = "X-Coffer-Version";
+
+    static okhttp3.Response stampVersion(okhttp3.Interceptor.Chain chain) throws java.io.IOException {
+        return chain.proceed(chain.request().newBuilder()
+            .header(VERSION_HEADER, com.gecopilot.client.ServerConfig.VERSION).build());
+    }
+
     /** Rolling-session header (server TokenRenewer). */
     public static final String RENEW_HEADER = "X-Coffer-Token";
     private volatile java.util.function.Consumer<String> tokenListener = t -> {};
@@ -97,11 +105,12 @@ public class ApiClient {
     String currentTokenForTest() { return token; }
 
     public ApiClient(OkHttpClient http, Gson gson, String baseUrl) {
-        this.http = http == null ? null : http.newBuilder().addInterceptor(this::observe).build();
+        this.http = http == null ? null : http.newBuilder().addInterceptor(ApiClient::stampVersion)
+            .addInterceptor(this::observe).build();
         // Same client, shorter deadline (a check that hangs is itself the answer), and without the
         // conn-state interceptor: a reachable /api/status must not clear the "unreachable" state that
         // a failing authed call just set.
-        this.statusHttp = http == null ? null : http.newBuilder()
+        this.statusHttp = http == null ? null : http.newBuilder().addInterceptor(ApiClient::stampVersion)
             .callTimeout(STATUS_TIMEOUT_SEC, java.util.concurrent.TimeUnit.SECONDS).build();
         this.gson = gson;
         this.baseUrl = baseUrl.replaceAll("/+$", "");

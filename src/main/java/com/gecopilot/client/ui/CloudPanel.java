@@ -27,6 +27,12 @@ import java.util.function.IntConsumer;
 public class CloudPanel extends PluginPanel {
     private static final NumberFormat GP = NumberFormat.getIntegerInstance();
     private static final Color BLUE = new Color(0x4f, 0xc3, 0xf7);
+    // Advice colours by meaning (PR #43 review): a loss you are locking in, a cost we only partly
+    // know, and everything else. #FF7B72 keeps >= 4.5:1 contrast on the dark card.
+    static final Color WARN = new Color(0xFF, 0x7B, 0x72);
+    static final Color PARTIAL = new Color(0xFF, 0xB0, 0x20);
+    static final Color NEUTRAL = new Color(0xA8, 0xA8, 0xA8);
+    static final Color NEUTRAL_VALUE = new Color(0xF2, 0xEF, 0xE6);
     private static final int HERD_WARN = 3; // others-buying count that flips the herd line amber
 
     private final ItemManager itemManager;
@@ -1993,40 +1999,33 @@ public class CloudPanel extends PluginPanel {
         return card;
     }
 
-    private JPanel positionCard(PositionDto p) {
+    JPanel positionCard(PositionDto p) {
         Color side = p.buy ? BLUE : ColorScheme.BRAND_ORANGE;
         JPanel card = baseCard(side);
-        JPanel top = new JPanel(new BorderLayout());
-        top.setBackground(ColorScheme.DARKER_GRAY_COLOR);
-        top.setAlignmentX(Component.LEFT_ALIGNMENT);
-        top.add(iconLabel(p.id), BorderLayout.WEST);
-        JLabel nm = new JLabel(p.name);
-        nm.setFont(FontManager.getRunescapeBoldFont());
-        nm.setForeground(Color.WHITE);
-        nm.setBorder(BorderFactory.createEmptyBorder(0, 4, 0, 0));
-        JPanel east = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
-        east.setBackground(ColorScheme.DARKER_GRAY_COLOR);
-        east.add(sparklineToggle(p.id));
-        east.add(star(p.id));
         JLabel tag = new JLabel(p.buy ? "BUYING" : "SELLING");
         tag.setFont(FontManager.getRunescapeSmallFont());
         tag.setForeground(side);
-        east.add(tag);
-        top.add(nm, BorderLayout.CENTER);
-        top.add(east, BorderLayout.EAST);
-        top.setMaximumSize(new Dimension(Integer.MAX_VALUE, top.getPreferredSize().height));
-        card.add(top);
+        card.add(titleBlock(p.id, p.name, tag, sparklineToggle(p.id), star(p.id)));
         card.add(gap());
         card.add(row("Progress", p.sold + " / " + p.total, Color.WHITE));
         card.add(row("Price", GP.format(p.price) + " gp", Color.WHITE));
-        Color ec = p.edge >= 0 ? ColorScheme.PROGRESS_COMPLETE_COLOR : ColorScheme.PROGRESS_ERROR_COLOR;
-        card.add(row("Flip edge", (p.edge >= 0 ? "+" : "") + GP.format(p.edge) + " gp", ec));
+        // Buy: "Market margin" at today's fillable sell. Sell: "Profit" against your cost, sent only
+        // when your cost covers every unit. Otherwise a loss the known units already lock in, or
+        // "unknown": never a gain on just the tracked part.
+        if (p.edge != null) {
+            card.add(row(p.buy ? "Market margin" : "Profit", signedGp(p.edge), edgeColor(p.edge)));
+        } else if (!p.buy && p.knownLoss != null && p.knownQty != null) {
+            // Red only when the server warns (past the partial floor); a small known loss stays amber.
+            card.add(row("Loss (" + p.knownQty + " known)", signedGp(p.knownLoss), p.warn ? WARN : PARTIAL));
+        } else if (!p.buy) {
+            card.add(row("Profit", "unknown", NEUTRAL));
+        }
         if (p.alchProfit != null)
             card.add(row("Alch profit", "+" + GP.format(p.alchProfit) + " gp", ColorScheme.PROGRESS_COMPLETE_COLOR));
-        card.add(row("Open", p.openMin + "m", p.openMin >= 15 ? ColorScheme.BRAND_ORANGE : ColorScheme.LIGHT_GRAY_COLOR));
+        card.add(row("Open", p.openMin + "m", p.openMin >= 15 ? PARTIAL : ColorScheme.LIGHT_GRAY_COLOR));
         if (p.target != null) {
             String lbl = (p.targetLabel != null && !p.targetLabel.isEmpty()) ? p.targetLabel : (p.buy ? "Raise buy to" : "Drop sell to");
-            card.add(row(lbl, GP.format(p.target) + " gp", ColorScheme.BRAND_ORANGE));
+            card.add(row(lbl, GP.format(p.target) + " gp", PARTIAL));
         }
         if (sparklineOpen.contains(p.id)) card.add(sparklineBlock(p.id));
         if (p.avgDownQty != null && p.avgDownPrice != null && p.avgDownBreakeven != null) {
@@ -2044,24 +2043,21 @@ public class CloudPanel extends PluginPanel {
         verdictRow.setBackground(ColorScheme.DARKER_GRAY_COLOR);
         verdictRow.setAlignmentX(Component.LEFT_ALIGNMENT);
         String v = p.verdict == null ? "HOLD" : p.verdict;
-        Color badge = v.equals("CUT") ? new Color(0xC8, 0x3A, 0x3A)
-            : v.equals("REPRICE") ? new Color(0xD1, 0x8A, 0x00)
-            : new Color(0x3C, 0x8C, 0x3C);
+        Color badge = verdictColor(v);
         JLabel verdictLabel = new JLabel(v + (p.confidence != null && !p.confidence.equals("LOW") ? " · " + p.confidence : ""));
         verdictLabel.setFont(FontManager.getRunescapeSmallFont());
         verdictLabel.setForeground(badge);
         verdictRow.add(verdictLabel);
         if (p.advice != null && !p.advice.isEmpty()) {
             JLabel adv = centered(p.advice);
-            adv.setForeground(p.target != null ? (p.warn ? ColorScheme.PROGRESS_ERROR_COLOR : ColorScheme.BRAND_ORANGE)
-                : ColorScheme.PROGRESS_COMPLETE_COLOR);
+            adv.setForeground(adviceColor(p));
             verdictRow.add(adv);
         }
         card.add(verdictRow);
         return card;
     }
 
-    private JPanel watchCard(WatchDto w) {
+    JPanel watchCard(WatchDto w) {
         Color stripe = w.sellableNow ? ColorScheme.PROGRESS_COMPLETE_COLOR
             : (w.margin > 0 ? BLUE : ColorScheme.LIGHT_GRAY_COLOR);
         JPanel card = baseCard(stripe);
@@ -2069,15 +2065,79 @@ public class CloudPanel extends PluginPanel {
         card.add(gap());
         card.add(row("Buy", GP.format(w.buy), BLUE));
         card.add(row("Sell", GP.format(w.sell), Color.WHITE));
-        Color mc = w.margin >= 0 ? ColorScheme.PROGRESS_COMPLETE_COLOR : ColorScheme.PROGRESS_ERROR_COLOR;
-        card.add(row("Margin", (w.margin >= 0 ? "+" : "") + GP.format(w.margin) + " gp", mc));
-        if (w.buyCost > 0) {
-            card.add(row("Your cost", GP.format(w.buyCost) + " gp", ColorScheme.LIGHT_GRAY_COLOR));
-            JLabel st = centered(w.sellableNow ? "Sellable now at profit" : "Recovers at " + GP.format(w.breakeven));
-            st.setForeground(w.sellableNow ? ColorScheme.PROGRESS_COMPLETE_COLOR : ColorScheme.BRAND_ORANGE);
+        // Market margin is what the market pays, not your profit: neutral when your cost is partial.
+        Color mc = w.partialCost ? NEUTRAL_VALUE : edgeColor(w.margin);
+        card.add(row("Market margin", signedGp(w.margin), mc));
+        int known = knownCost(w);
+        if (w.partialCost && known > 0) {
+            card.add(row(costLabel(w), GP.format(known) + " gp", ColorScheme.LIGHT_GRAY_COLOR));
+            JLabel st = centered(costKnownLine(w));
+            st.setForeground(PARTIAL);
+            card.add(st);
+            JLabel none = centered("No profit or recovery shown");
+            none.setForeground(NEUTRAL);
+            card.add(none);
+        } else if (w.buyCost > 0) {
+            card.add(row(costLabel(w), GP.format(w.buyCost) + " gp", ColorScheme.LIGHT_GRAY_COLOR));
+            JLabel st = centered(w.sellableNow ? "Sellable now" : "Recovers at " + GP.format(w.breakeven));
+            st.setForeground(w.sellableNow ? ColorScheme.PROGRESS_COMPLETE_COLOR : PARTIAL);
             card.add(st);
         }
         return card;
+    }
+
+    /** Average over the known units (servers before 0.1.32 sent it as buyCost). */
+    static int knownCost(WatchDto w) {
+        return w.knownCost > 0 ? w.knownCost : w.buyCost;
+    }
+
+    /** "Avg cost (42 known)": always says how many units the average covers ("Your cost" if the server didn't say). */
+    static String costLabel(WatchDto w) {
+        return w.trackedQty > 0 ? "Avg cost (" + w.trackedQty + " known)" : "Your cost";
+    }
+
+    /** True minus (U+2212) when the RuneLite panel fonts have the glyph, else a hyphen (no tofu). */
+    static final String MINUS = minusGlyph();
+
+    private static String minusGlyph() {
+        try {
+            return FontManager.getRunescapeSmallFont().canDisplay('\u2212')
+                && FontManager.getRunescapeFont().canDisplay('\u2212') ? "\u2212" : "-";
+        } catch (RuntimeException | Error e) {
+            return "-";
+        }
+    }
+
+    /** "+4,948 gp", "0 gp", "−890,318 gp". */
+    static String signedGp(long n) {
+        if (n == 0) return "0 gp";
+        return (n > 0 ? "+" : MINUS) + GP.format(Math.abs(n)) + " gp";
+    }
+
+    /** Green gain, neutral zero, warn loss. */
+    static Color edgeColor(long n) {
+        return n > 0 ? ColorScheme.PROGRESS_COMPLETE_COLOR : n == 0 ? NEUTRAL : WARN;
+    }
+
+    /** "Cost known for 22 of 42". */
+    static String costKnownLine(WatchDto w) {
+        return "Cost known for " + w.trackedQty + " of " + w.heldQty;
+    }
+
+    /** Advice colour by meaning: a warning, a partly-known cost, or neutral. */
+    static Color adviceColor(PositionDto p) {
+        if (p.warn) return WARN;
+        if (p.partialCost || "CHECK".equals(p.verdict)) return PARTIAL;
+        return NEUTRAL;
+    }
+
+    static Color verdictColor(String v) {
+        switch (v) {
+            case "CUT": return WARN;
+            case "REPRICE": return PARTIAL;
+            case "CHECK": return NEUTRAL;
+            default: return new Color(0x3C, 0x8C, 0x3C);
+        }
     }
 
     private JPanel logCard(LogRowDto l) {
@@ -2102,24 +2162,96 @@ public class CloudPanel extends PluginPanel {
     // ---- helpers ----
 
     private JPanel titleRow(int id, String name, JComponent east) {
+        return east == null ? titleBlock(id, name, null) : titleBlock(id, name, null, east);
+    }
+
+    /** Width the item name may use beside the icon: 187px card interior minus the 24px icon and gaps. */
+    static final int TITLE_W = 157;
+
+    /**
+     * Icon + the full item name wrapped onto up to 2 lines (tooltip always has the full name), and,
+     * when there is a tag or controls, a row underneath: tag on the left, controls on the right.
+     */
+    private JPanel titleBlock(int id, String name, JLabel tag, JComponent... controls) {
+        JPanel block = new JPanel();
+        block.setLayout(new BoxLayout(block, BoxLayout.Y_AXIS));
+        block.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+        block.setAlignmentX(Component.LEFT_ALIGNMENT);
+
         JPanel top = new JPanel(new BorderLayout());
         top.setBackground(ColorScheme.DARKER_GRAY_COLOR);
         top.setAlignmentX(Component.LEFT_ALIGNMENT);
-        top.add(iconLabel(id), BorderLayout.WEST);
-        JLabel nm = new JLabel(name);
+        JLabel icon = iconLabel(id);
+        icon.setVerticalAlignment(SwingConstants.TOP);
+        top.add(icon, BorderLayout.WEST);
+        JLabel nm = new JLabel();
         nm.setFont(FontManager.getRunescapeBoldFont());
         nm.setForeground(Color.WHITE);
         nm.setBorder(BorderFactory.createEmptyBorder(0, 4, 0, 0));
+        nm.setVerticalAlignment(SwingConstants.TOP);
+        String[] lines = wrapTitle(name == null ? "" : name, nm.getFontMetrics(nm.getFont()), TITLE_W);
+        nm.setText(lines.length == 1 ? lines[0]
+            : "<html>" + escapeHtml(lines[0]) + "<br>" + escapeHtml(lines[1]) + "</html>");
+        nm.setToolTipText(name);
         top.add(nm, BorderLayout.CENTER);
-        if (east != null) top.add(east, BorderLayout.EAST);
         top.setMaximumSize(new Dimension(Integer.MAX_VALUE, top.getPreferredSize().height));
-        return top;
+        block.add(top);
+
+        if (tag != null || (controls != null && controls.length > 0)) {
+            JPanel under = new JPanel(new BorderLayout());
+            under.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+            under.setAlignmentX(Component.LEFT_ALIGNMENT);
+            under.setBorder(BorderFactory.createEmptyBorder(2, 28, 0, 0));
+            if (tag != null) under.add(tag, BorderLayout.WEST);
+            if (controls != null && controls.length > 0) {
+                JPanel east = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+                east.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+                for (JComponent c : controls) if (c != null) east.add(c);
+                under.add(east, BorderLayout.EAST);
+            }
+            under.setMaximumSize(new Dimension(Integer.MAX_VALUE, under.getPreferredSize().height));
+            block.add(under);
+        }
+        block.setMaximumSize(new Dimension(Integer.MAX_VALUE, block.getPreferredSize().height));
+        return block;
+    }
+
+    /** Greedy word wrap to at most 2 lines of {@code width}px; the 2nd line ends in "..." if it overflows. */
+    static String[] wrapTitle(String name, FontMetrics fm, int width) {
+        if (fm.stringWidth(name) <= width) return new String[]{name};
+        String[] words = name.split(" ");
+        StringBuilder first = new StringBuilder();
+        int i = 0;
+        for (; i < words.length; i++) {
+            String next = first.length() == 0 ? words[i] : first + " " + words[i];
+            if (fm.stringWidth(next) > width && first.length() > 0) break;
+            first.setLength(0); first.append(next);
+            if (fm.stringWidth(next) > width) { i++; break; } // a single word wider than the line
+        }
+        StringBuilder rest = new StringBuilder();
+        for (int j = i; j < words.length; j++) { if (rest.length() > 0) rest.append(' '); rest.append(words[j]); }
+        String second = rest.toString();
+        if (fm.stringWidth(second) > width) {
+            String dots = "...";
+            while (second.length() > 0 && fm.stringWidth(second + dots) > width) second = second.substring(0, second.length() - 1);
+            second = second.trim() + dots;
+        }
+        String one = first.toString();
+        if (fm.stringWidth(one) > width) { // one long word: cut it too
+            while (one.length() > 1 && fm.stringWidth(one + "...") > width) one = one.substring(0, one.length() - 1);
+            one = one + "...";
+        }
+        return second.isEmpty() ? new String[]{one} : new String[]{one, second};
+    }
+
+    private static String escapeHtml(String s) {
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
     private JLabel iconLabel(int id) {
         JLabel l = new JLabel();
         l.setPreferredSize(new Dimension(24, 24));
-        AsyncBufferedImage img = itemManager.getImage(id);
+        AsyncBufferedImage img = itemManager == null ? null : itemManager.getImage(id);
         if (img != null) {
             img.onLoaded(() -> { l.setIcon(new ImageIcon(img)); l.revalidate(); l.repaint(); });
             l.setIcon(new ImageIcon(img));

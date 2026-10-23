@@ -67,6 +67,7 @@ public class GeCopilotCloudPlugin extends Plugin {
     private static final int MAX_PENDING_EVENTS = 200;
     private volatile String lastPlanFp = "";
     private final Map<Integer, Long> coachSent = new HashMap<>();
+    private final LossNotice lossNotice = new LossNotice();
     private final com.gecopilot.client.auth.TokenStore tokenStore = new com.gecopilot.client.auth.TokenStore();
     // Fills that couldn't be posted yet (not logged in / offline) — retried until accepted, so a
     // buy that fills before login is never lost.
@@ -717,6 +718,12 @@ public class GeCopilotCloudPlugin extends Plugin {
         long window = Math.max(1, config.nudgeCooldownMin()) * 60_000L;
         long now = System.currentTimeMillis();
         for (PositionDto p : sync.positions) {
+            if (LossNotice.applies(p)) {
+                // Below cost: once per item + price + advice, and only past the 1% / 50k bar.
+                String text = lossNotice.next(p);
+                if (text != null) notifier.notify(text);
+                continue;
+            }
             if (!p.warn) continue;
             Long last = coachSent.get(p.id);
             if (last == null || now - last > window) {
