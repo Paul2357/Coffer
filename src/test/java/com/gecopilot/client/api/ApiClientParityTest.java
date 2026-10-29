@@ -18,7 +18,7 @@ public class ApiClientParityTest {
         assertEquals(5, r.plan.get(0).qty);
         assertEquals(1, r.positions.size());
         assertEquals("Underbidding", r.positions.get(0).advice);
-        assertEquals(Integer.valueOf(100), r.positions.get(0).target);
+        assertEquals(Long.valueOf(100), r.positions.get(0).target);
     }
 
     @Test public void parsesLog() {

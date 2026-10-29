@@ -36,7 +36,7 @@ public final class GeHistoryReconcile {
 
     /** A raw recorded trade from GET /api/trades/mine (server's source of truth). */
     public static final class Recorded {
-        public int itemId; public boolean buy; public int qty; public int price;
+        public int itemId; public boolean buy; public int qty; public long price;
         /** Epoch ms. 0 when the server didn't send one — then every row is "recent". */
         public long ts;
     }
@@ -46,10 +46,10 @@ public final class GeHistoryReconcile {
         public final int itemId;
         public final boolean buy;
         public final int qty;
-        public final int fromPrice;
-        public final int toPrice;
+        public final long fromPrice;
+        public final long toPrice;
 
-        public Correction(int itemId, boolean buy, int qty, int fromPrice, int toPrice) {
+        public Correction(int itemId, boolean buy, int qty, long fromPrice, long toPrice) {
             this.itemId = itemId; this.buy = buy; this.qty = qty;
             this.fromPrice = fromPrice; this.toPrice = toPrice;
         }
@@ -66,7 +66,7 @@ public final class GeHistoryReconcile {
         }
     }
 
-    private static String sig(int itemId, boolean buy, int qty, int price) {
+    private static String sig(int itemId, boolean buy, int qty, long price) {
         return itemId + ":" + (buy ? "B" : "S") + ":" + qty + ":" + price;
     }
 
@@ -75,7 +75,7 @@ public final class GeHistoryReconcile {
     }
 
     /** Gap is at most a quarter of the higher price (about 33% above the lower). */
-    static boolean withinBand(int a, int b) {
+    static boolean withinBand(long a, long b) {
         if (a <= 0 || b <= 0) return false;
         long max = Math.max(a, b);
         long diff = Math.abs((long) a - b);
@@ -126,7 +126,7 @@ public final class GeHistoryReconcile {
                     for (int j = 0; j < rs.size(); j++) {
                         if (usedR[j]) continue;
                         if (!withinBand(hs.get(i).unitPrice, rs.get(j).price)) continue;
-                        long diff = Math.abs((long) hs.get(i).unitPrice - rs.get(j).price);
+                        long diff = Math.abs(hs.get(i).unitPrice - rs.get(j).price);
                         if (diff < best) { best = diff; bi = i; bj = j; }
                     }
                 }

@@ -45,7 +45,7 @@ public final class GeHistoryReader {
             }
             if (itemId > 0 && qty > 0 && priceText != null) {
                 long gross = grossTotal(priceText);
-                if (gross >= 0) out.add(new GeHistoryRow(itemId, buy, qty, (int) Math.round((double) gross / qty)));
+                if (gross >= 0) out.add(new GeHistoryRow(itemId, buy, qty, Math.round((double) gross / qty)));
             }
         }
         return out;

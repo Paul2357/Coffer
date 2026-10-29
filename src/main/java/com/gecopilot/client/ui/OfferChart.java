@@ -82,6 +82,8 @@ public final class OfferChart {
         /** Mouse position (canvas coords) for the crosshair tooltip, or null. */
         public Point hover;
         public ZoneId zone = ZoneId.systemDefault();
+        /** The GE item on screen, for the after-tax margin (some items are tax-exempt). */
+        public int itemId;
     }
 
     /** A horizontal price line with an inline label. */
@@ -195,7 +197,7 @@ public final class OfferChart {
         if (p.high > 0) dot(g, px, y(plot, p.high, lo, hi), INSTABUY);
         if (p.low > 0) dot(g, px, y(plot, p.low, lo, hi), INSTASELL);
 
-        List<String> lines = tooltipLines(p, m.zone);
+        List<String> lines = tooltipLines(m.itemId, p, m.zone);
         int lineH = 11, w = 0;
         for (String s : lines) w = Math.max(w, fm.stringWidth(s));
         Rectangle box = placeTooltip(new Point(px, m.hover.y), w + 8, lines.size() * lineH + 6, belowHeader(area));
@@ -219,14 +221,14 @@ public final class OfferChart {
      * Same fields as the web dashboard's price-chart tooltip (time, Buy, Sell), plus the after-tax
      * margin and the volumes the dashboard shows in its volume chart. Buy = instabuy, Sell = instasell.
      */
-    static List<String> tooltipLines(SparklineDto.Point p, ZoneId zone) {
+    static List<String> tooltipLines(int itemId, SparklineDto.Point p, ZoneId zone) {
         List<String> out = new ArrayList<>();
         out.add(TIP_TIME.format(Instant.ofEpochSecond(p.ts).atZone(zone)));
         out.add("Buy " + (p.high > 0 ? gp(p.high) : "-"));
         out.add("Sell " + (p.low > 0 ? gp(p.low) : "-"));
         if (p.high > 0 && p.low > 0) {
-            long margin = p.high - p.low - OfferPriceWarning.tax((int) Math.min(p.high, Integer.MAX_VALUE));
-            out.add("Margin " + gp(margin) + " after tax");
+            long margin = OfferPriceWarning.flipMargin(itemId, p.low, p.high);
+            out.add("Margin " + gp(margin) + OfferPriceWarning.marginNote(itemId));
         }
         if (p.highVol > 0 || p.lowVol > 0) out.add("Vol " + gp(p.highVol) + " buy / " + gp(p.lowVol) + " sell");
         return out;

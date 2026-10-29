@@ -25,7 +25,7 @@ public final class OfferJournal {
         this.onTerminal = terminalSaver != null ? terminalSaver : m -> {};
     }
 
-    public OfferEvent onState(int slot, String state, int itemId, int total, int sold, int price, long ts) {
+    public OfferEvent onState(int slot, String state, int itemId, int total, int sold, long price, long ts) {
         if (state == null) return null;
         if (state.equals("BUYING") || state.equals("SELLING")) {
             if (terminal.remove(slot) != null) onTerminal.accept(new HashMap<>(terminal));

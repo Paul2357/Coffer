@@ -3,7 +3,8 @@ package com.gecopilot.client.trade;
 public class CompletedFill implements OwnedItem {
     public final int itemId;
     public final boolean buy;
-    public final int qty, price;
+    public final int qty;
+    public final long price;
     public final long ts;
     // RS display name that made the fill, stamped by the plugin after capture (null if unknown, e.g. an
     // offline fill replayed before login). Serialized with the durable pending queue.
@@ -14,7 +15,7 @@ public class CompletedFill implements OwnedItem {
     // Coffer user this fill belongs to (see QueueOwnership). Null in queues saved by older builds.
     public Long ownerId;
 
-    public CompletedFill(int itemId, boolean buy, int qty, int price, long ts) {
+    public CompletedFill(int itemId, boolean buy, int qty, long price, long ts) {
         this.itemId = itemId;
         this.buy = buy;
         this.qty = qty;

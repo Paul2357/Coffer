@@ -38,7 +38,7 @@ public class CostCardRenderTest {
         PositionDto cut = pos(false, 0, 42, 157_196, -1_699_698L, "CUT", "Falling \u2014 cut to sell", true);
         cut.confidence = "HIGH";
         PositionDto coveredLoss = pos(false, 0, 42, 157_196, -1_699_698L, "REPRICE", "Sells at a loss", true);
-        coveredLoss.confidence = "HIGH"; coveredLoss.target = 198_491; coveredLoss.targetLabel = "Breakeven at";
+        coveredLoss.confidence = "HIGH"; coveredLoss.target = 198_491L; coveredLoss.targetLabel = "Breakeven at";
 
         WatchDto wPartial = watch(true); WatchDto wFull = watch(false);
         WatchDto wSellable = watch(false); wSellable.sellableNow = true; wSellable.breakeven = 156_361;

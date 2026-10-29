@@ -255,16 +255,24 @@ public class OfferChartTest {
     @Test public void tooltipMirrorsTheDashboardFields() {
         SparklineDto.Point p = pt(1792595100L, 1_615, 1_249);
         p.highVol = 12; p.lowVol = 30;
-        List<String> lines = OfferChart.tooltipLines(p, java.time.ZoneId.of("America/New_York"));
+        List<String> lines = OfferChart.tooltipLines(0, p, java.time.ZoneId.of("America/New_York"));
         assertEquals("Oct 21 11:05", lines.get(0));
         assertEquals("Buy 1,615", lines.get(1));
         assertEquals("Sell 1,249", lines.get(2));
         assertEquals("Margin 334 after tax", lines.get(3)); // 1,615 - 1,249 - 32 tax
         assertEquals("Vol 12 buy / 30 sell", lines.get(4));
         SparklineDto.Point half = pt(1792595100L, 0, 1_249);
-        List<String> h = OfferChart.tooltipLines(half, java.time.ZoneId.of("UTC"));
+        List<String> h = OfferChart.tooltipLines(0, half, java.time.ZoneId.of("UTC"));
         assertEquals("Buy -", h.get(1));
         assertEquals("no margin without both sides", 3, h.size());
+    }
+
+    @Test public void tooltipSaysNoGeTaxForExemptItemsAndTheFeeForBonds() {
+        SparklineDto.Point p = pt(1792595100L, 10_050_000, 10_000_000);
+        java.time.ZoneId z = java.time.ZoneId.of("UTC");
+        assertEquals("Margin 50,000 (no GE tax)", OfferChart.tooltipLines(3853, p, z).get(3));
+        assertEquals("Margin -950,000 after 10% bond fee", OfferChart.tooltipLines(13190, p, z).get(3));
+        assertEquals("Margin -151,000 after tax", OfferChart.tooltipLines(30810, p, z).get(3));
     }
 
     @Test public void tooltipStaysInsideTheChart() {

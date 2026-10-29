@@ -106,7 +106,7 @@ public class OfferCapture {
      * (see {@link #restoreOpen}), and resets when the offer itself changes.
      * @return the new offer when this call opened one; null for a quantity tick or a non-open state
      */
-    public OpenOfferDto noteOpen(int slot, String state, int itemId, int sold, int total, int price, long nowMs) {
+    public OpenOfferDto noteOpen(int slot, String state, int itemId, int sold, int total, long price, long nowMs) {
         if (state.equals("BUYING") || state.equals("SELLING")) {
             liveThisSession.add(slot);
             boolean buying = state.equals("BUYING");
@@ -202,7 +202,7 @@ public class OfferCapture {
         if (sameTerminal(slotSig.get(slot), sig)) return null;
         putSig(slot, sig);
 
-        int avg = (int) Math.round((double) spent / qtySold);
+        long avg = Math.round((double) spent / qtySold);
         CompletedFill f = new CompletedFill(itemId, isBuy(state), qtySold, avg, ts);
         f.fillKey = fillKey(slot, sig);
         return f;

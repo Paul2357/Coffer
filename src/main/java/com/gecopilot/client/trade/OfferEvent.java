@@ -5,7 +5,7 @@ public class OfferEvent implements OwnedItem {
     public String kind; // placed, cancelled, completed
     public int itemId;
     public boolean buy;
-    public int price;
+    public long price;
     public int qty;
     public int filled;
     public int slot;
@@ -14,7 +14,7 @@ public class OfferEvent implements OwnedItem {
 
     public OfferEvent() {}
 
-    public OfferEvent(String kind, int itemId, boolean buy, int price, int qty, int filled, int slot, long ts) {
+    public OfferEvent(String kind, int itemId, boolean buy, long price, int qty, int filled, int slot, long ts) {
         this.kind = kind;
         this.itemId = itemId;
         this.buy = buy;

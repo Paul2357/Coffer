@@ -373,17 +373,17 @@ public class ApiClient {
     }
 
     /** Returns true only when the server accepted the trade, so callers can retry on failure. */
-    public boolean postTrade(int itemId, boolean buy, int qty, int price, long ts) {
+    public boolean postTrade(int itemId, boolean buy, int qty, long price, long ts) {
         return postTrade(itemId, buy, qty, price, ts, null);
     }
 
     /** account = RS display name that made the fill (nullable → server buckets it as "Unknown"). */
-    public boolean postTrade(int itemId, boolean buy, int qty, int price, long ts, String account) {
+    public boolean postTrade(int itemId, boolean buy, int qty, long price, long ts, String account) {
         return postTrade(itemId, buy, qty, price, ts, account, null);
     }
 
     /** fillKey = stable identity of the fill (see OfferCapture); the server treats a repeat as a no-op. */
-    public boolean postTrade(int itemId, boolean buy, int qty, int price, long ts, String account, String fillKey) {
+    public boolean postTrade(int itemId, boolean buy, int qty, long price, long ts, String account, String fillKey) {
         if (token == null) return false;
         JsonObject b = new JsonObject();
         b.addProperty("itemId", itemId);
@@ -403,7 +403,7 @@ public class ApiClient {
      * Rewrite one of the user's own trades from the offer price to the GE History fill price.
      * The server updates the newest row matching item/side/qty/fromPrice and no other user's row.
      */
-    public boolean correctTrade(int itemId, boolean buy, int qty, int fromPrice, int toPrice) {
+    public boolean correctTrade(int itemId, boolean buy, int qty, long fromPrice, long toPrice) {
         if (token == null) return false;
         JsonObject b = new JsonObject();
         b.addProperty("itemId", itemId);
@@ -418,7 +418,7 @@ public class ApiClient {
     }
 
     /** Post a GE-History-recovered trade (source=history). Separate from live fills. */
-    public boolean postHistoryTrade(int itemId, boolean buy, int qty, int price, long ts) {
+    public boolean postHistoryTrade(int itemId, boolean buy, int qty, long price, long ts) {
         if (token == null) return false;
         JsonObject b = new JsonObject();
         b.addProperty("itemId", itemId); b.addProperty("side", buy ? "BUY" : "SELL");
@@ -447,7 +447,7 @@ public class ApiClient {
                 JsonObject o = e.getAsJsonObject();
                 var r = new com.gecopilot.client.trade.GeHistoryReconcile.Recorded();
                 r.itemId = o.get("itemId").getAsInt(); r.buy = o.get("buy").getAsBoolean();
-                r.qty = o.get("qty").getAsInt(); r.price = o.get("price").getAsInt();
+                r.qty = o.get("qty").getAsInt(); r.price = o.get("price").getAsLong();
                 r.ts = o.has("ts") && !o.get("ts").isJsonNull() ? o.get("ts").getAsLong() : 0L;
                 out.add(r);
             }
@@ -621,7 +621,7 @@ public class ApiClient {
     }
 
     /** Placement features for an offer that just opened. Null when the market isn't known yet. */
-    public PlacementFeatures placementFeatures(int itemId, boolean buy, int price, int qty) {
+    public PlacementFeatures placementFeatures(int itemId, boolean buy, long price, int qty) {
         if (token == null || itemId <= 0 || price <= 0 || qty <= 0) return null;
         String url = baseUrl + "/api/fill-features?itemId=" + itemId
             + "&buy=" + buy + "&price=" + price + "&qty=" + qty;

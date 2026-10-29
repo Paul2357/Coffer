@@ -50,7 +50,7 @@ public class OfferPriceWarningTest {
     @Test public void adamantArrowsMarginIsTooThinOnABuy() {
         // High 28, low 26. Tax is 0 under 50 gp, so after-tax margin is 2 gp (~7.7% of 26).
         // That clears the 0.3% ROI default and fails the 10 gp margin default.
-        OfferPriceWarning.ThinMargin w = OfferPriceWarning.evaluateMargin(true, 26, 28, 10, 0.3);
+        OfferPriceWarning.ThinMargin w = OfferPriceWarning.evaluateMargin(0, true, 26, 28, 10, 0.3);
         assertNotNull(w);
         assertEquals(2L, w.marginGp);
         assertEquals(2.0 * 100.0 / 26.0, w.marginPct, 0.001);
@@ -61,22 +61,22 @@ public class OfferPriceWarningTest {
     }
 
     @Test public void thinMarginDoesNotWarnOnASellSetup() {
-        assertNull(OfferPriceWarning.evaluateMargin(false, 26, 28, 10, 0.3));
+        assertNull(OfferPriceWarning.evaluateMargin(0, false, 26, 28, 10, 0.3));
     }
 
     @Test public void marginAtTheUsersThresholdsIsFine() {
         // 197 gp on a 10_000 buy is 1.97%, above both defaults.
-        assertNull(OfferPriceWarning.evaluateMargin(true, 10_000, 10_405, 10, 0.3));
+        assertNull(OfferPriceWarning.evaluateMargin(0, true, 10_000, 10_405, 10, 0.3));
         // sell 10_214 taxes 204, so margin is exactly 10 gp and exactly 0.1%. FlipEngine keeps `==`.
-        assertNull(OfferPriceWarning.evaluateMargin(true, 10_000, 10_214, 10, 0.1));
-        OfferPriceWarning.ThinMargin underRoi = OfferPriceWarning.evaluateMargin(true, 10_000, 10_214, 10, 0.11);
+        assertNull(OfferPriceWarning.evaluateMargin(0, true, 10_000, 10_214, 10, 0.1));
+        OfferPriceWarning.ThinMargin underRoi = OfferPriceWarning.evaluateMargin(0, true, 10_000, 10_214, 10, 0.11);
         assertNotNull(underRoi);
         assertEquals(10L, underRoi.marginGp);
     }
 
     @Test public void unprofitableSpreadWarns() {
         // 100/100 after 2% tax is -2 gp.
-        OfferPriceWarning.ThinMargin w = OfferPriceWarning.evaluateMargin(true, 100, 100, 10, 0.3);
+        OfferPriceWarning.ThinMargin w = OfferPriceWarning.evaluateMargin(0, true, 100, 100, 10, 0.3);
         assertNotNull(w);
         assertEquals(-2L, w.marginGp);
         assertTrue(w.detail().contains("-2"));
@@ -84,23 +84,43 @@ public class OfferPriceWarningTest {
 
     @Test public void roiBelowTheUsersMinimumWarnsEvenWhenGpClears() {
         // ~201 gp on a 100_000 buy is 0.20%, under a 0.3% floor, over a 10 gp floor.
-        OfferPriceWarning.ThinMargin w = OfferPriceWarning.evaluateMargin(true, 100_000, 102_245, 10, 0.3);
+        OfferPriceWarning.ThinMargin w = OfferPriceWarning.evaluateMargin(0, true, 100_000, 102_245, 10, 0.3);
         assertNotNull(w);
         assertTrue(w.marginGp >= 10);
         assertTrue(w.marginPct < 0.3);
     }
 
     @Test public void missingMarketDoesNotWarnOnMargin() {
-        assertNull(OfferPriceWarning.evaluateMargin(true, 0, 28, 10, 0.3));
-        assertNull(OfferPriceWarning.evaluateMargin(true, 26, 0, 10, 0.3));
+        assertNull(OfferPriceWarning.evaluateMargin(0, true, 0, 28, 10, 0.3));
+        assertNull(OfferPriceWarning.evaluateMargin(0, true, 26, 0, 10, 0.3));
     }
 
     @Test public void buyOverHighAndThinMarginAreIndependent() {
         // Bid 30 is over the high of 28, and the 2 gp spread is also too thin.
         assertNotNull(OfferPriceWarning.evaluate(true, 30, 26, 28));
-        assertNotNull(OfferPriceWarning.evaluateMargin(true, 26, 28, 10, 0.3));
+        assertNotNull(OfferPriceWarning.evaluateMargin(0, true, 26, 28, 10, 0.3));
         // Bid 27 sits between 26 and 28, so only the thin-margin line fires.
         assertNull(OfferPriceWarning.evaluate(true, 27, 26, 28));
-        assertNotNull(OfferPriceWarning.evaluateMargin(true, 26, 28, 10, 0.3));
+        assertNotNull(OfferPriceWarning.evaluateMargin(0, true, 26, 28, 10, 0.3));
+    }
+
+    @Test
+    public void exemptItemsPayNoTaxAndBondsPayTheConversionFee() {
+        assertEquals(0, OfferPriceWarning.tax(3853, 10_050_000));
+        assertEquals(0, OfferPriceWarning.saleCost(3853, 10_050_000));
+        assertEquals(0, OfferPriceWarning.tax(13190, 10_050_000));
+        assertEquals(0, OfferPriceWarning.saleCost(13190, 10_050_000));
+        assertEquals(11_000_000, OfferPriceWarning.buyCost(13190, 10_000_000));
+        assertEquals(201_000, OfferPriceWarning.saleCost(30810, 10_050_000));
+        assertEquals(5_000_000, OfferPriceWarning.tax(30810, 300_000_000)); // 5m cap
+        assertEquals(3_143, OfferPriceWarning.tax(30810, 157_196));
+        assertNull(OfferPriceWarning.evaluateMargin(3853, true, 10_000_000, 10_050_000, 10, 0.3));
+        assertNotNull(OfferPriceWarning.evaluateMargin(30810, true, 10_000_000, 10_050_000, 10, 0.3));
+        OfferPriceWarning.ThinMargin bond = OfferPriceWarning.evaluateMargin(13190, true, 10_000_000, 10_050_000, 10, 0.3);
+        assertNotNull(bond);
+        assertEquals(-950_000, bond.marginGp);
+        assertTrue(bond.detail().endsWith("after 10% bond fee"));
+        assertTrue(OfferPriceWarning.evaluateMargin(30810, true, 10_000_000, 10_050_000, 10, 0.3).detail().endsWith("after tax"));
+        assertEquals(" (no GE tax)", OfferPriceWarning.marginNote(3853));
     }
 }

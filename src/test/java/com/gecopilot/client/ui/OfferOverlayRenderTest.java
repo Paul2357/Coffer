@@ -48,7 +48,7 @@ public class OfferOverlayRenderTest {
         // (margin > 4 bumps a tick; 2 gp does not). The user's bid of 27 is between low and high,
         // so the buy-over-high line stays quiet and only the thin-margin warning shows.
         QuoteDto q = quote(26, 28, 26, 28, 2);
-        OfferPriceWarning.ThinMargin thin = OfferPriceWarning.evaluateMargin(true, q.buy, q.sell, 10, 0.3);
+        OfferPriceWarning.ThinMargin thin = OfferPriceWarning.evaluateMargin(q.id, true, q.buy, q.sell, 10, 0.3);
         assertNotNull(thin);
         assertEquals(2L, thin.marginGp);
         assertNull(OfferPriceWarning.evaluate(true, 27, q.buy, q.sell));

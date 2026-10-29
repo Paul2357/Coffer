@@ -100,6 +100,7 @@ public class OfferChartOverlay extends Overlay {
         TimeseriesCache.Series s = cache.get(itemId, r.timestep);
         QuoteDto q = quote;
         model.range = r;
+        model.itemId = itemId;
         model.points = s == null ? null : s.points;
         model.failed = s != null && s.failed;
         model.dataAgeSec = s == null ? 0 : Math.max(0, (cache.nowMs() - s.dataAtMs) / 1000L);

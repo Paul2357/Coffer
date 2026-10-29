@@ -28,7 +28,7 @@ public final class SessionGuide {
     }
 
     /** Persistent next action. Null once the guide is finished. */
-    public static String banner(Stage stage, String flipName, int placeBuy) {
+    public static String banner(Stage stage, String flipName, long placeBuy) {
         if (stage == null || stage == Stage.DONE) return null;
         if (stage == Stage.OPEN_GE) return "Next: open the Grand Exchange.";
         if (stage == Stage.PLACE_OFFER) {

@@ -90,14 +90,20 @@ public final class WikiTimeseries implements TimeseriesCache.Loader {
         return out;
     }
 
-    /** A GE price in 1..Integer.MAX_VALUE, else 0 (missing). */
+    /**
+     * Highest GE price: coins plus platinum tokens, since the 30 September 2026 update
+     * (https://oldschool.runescape.wiki/w/Grand_Exchange, "GE Improvements: Beyond Max Cash").
+     */
+    static final long MAX_GE_PRICE = 2_149_631_130_647L;
+
+    /** A GE price in 1..{@link #MAX_GE_PRICE}, else 0 (missing). */
     static long price(JsonObject o, String key) {
         JsonElement e = o.get(key);
         if (e == null || e.isJsonNull() || !e.isJsonPrimitive()) return 0;
         double d;
         try { d = e.getAsDouble(); } catch (NumberFormatException ex) { return 0; }
         // Range-check as a double: a huge integer read via getAsLong() can wrap back into range.
-        return d >= 1 && d <= Integer.MAX_VALUE ? (long) d : 0;
+        return d >= 1 && d <= MAX_GE_PRICE ? (long) d : 0;
     }
 
     /** Latest plausible epoch second (year 2286); anything else is treated as missing. */

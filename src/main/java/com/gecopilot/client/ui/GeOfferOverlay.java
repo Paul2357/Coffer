@@ -70,7 +70,7 @@ public class GeOfferOverlay extends Overlay {
             if (type == 0 || type == 1) {
                 boolean buy = type == 0;
                 warning = OfferPriceWarning.evaluate(buy, price, q.buy, q.sell);
-                thin = OfferPriceWarning.evaluateMargin(buy, q.buy, q.sell, minMargin.getAsInt(), minRoi.getAsDouble());
+                thin = OfferPriceWarning.evaluateMargin(itemId, buy, q.buy, q.sell, minMargin.getAsInt(), minRoi.getAsDouble());
             }
         }
         return paint(g, panel, q, warning, thin);

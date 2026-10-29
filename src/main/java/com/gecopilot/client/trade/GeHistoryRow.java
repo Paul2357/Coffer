@@ -5,9 +5,9 @@ public class GeHistoryRow {
     public final int itemId;
     public final boolean buy;
     public final int qty;
-    public final int unitPrice; // total coins / qty
+    public final long unitPrice; // total coins / qty
 
-    public GeHistoryRow(int itemId, boolean buy, int qty, int unitPrice) {
+    public GeHistoryRow(int itemId, boolean buy, int qty, long unitPrice) {
         this.itemId = itemId; this.buy = buy; this.qty = qty; this.unitPrice = unitPrice;
     }
 }

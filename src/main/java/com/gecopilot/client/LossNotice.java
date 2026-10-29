@@ -1,6 +1,7 @@
 package com.gecopilot.client;
 
 import com.gecopilot.client.api.PositionDto;
+import com.gecopilot.client.ui.OfferPriceWarning;
 
 import java.text.NumberFormat;
 import java.util.LinkedHashMap;
@@ -48,7 +49,7 @@ final class LossNotice {
     /** Cost of the units the loss is measured on: units × ask after tax, plus the loss. */
     static long basis(PositionDto p, long loss) {
         int units = p.edge != null ? p.total : (p.knownQty != null ? p.knownQty : 0);
-        return (long) units * (p.price - tax(p.price)) + loss;
+        return (long) units * (p.price - OfferPriceWarning.saleCost(p.id, p.price)) + loss;
     }
 
     static boolean material(long loss, long basis) {
@@ -56,7 +57,7 @@ final class LossNotice {
     }
 
     /** "Contract of Glyphic Attenuation sells at a loss at 157,196 (−1.70m). Breakeven 198,493." */
-    static String text(String name, int price, long loss, Integer breakeven, Integer knownUnits) {
+    static String text(String name, long price, long loss, Long breakeven, Integer knownUnits) {
         return name + " sells at a loss at " + GP.format(price) + " (" + signedK(-loss)
             + (knownUnits != null ? " on " + knownUnits + " known unit" + (knownUnits == 1 ? "" : "s") : "") + ")."
             + (breakeven != null ? " Breakeven " + GP.format(breakeven) + "." : "");
@@ -68,11 +69,5 @@ final class LossNotice {
         if (a >= 1_000_000) return sign + String.format(Locale.ROOT, "%.2fm", a / 1_000_000.0);
         if (a >= 10_000) return sign + (a / 1_000) + "k";
         return sign + GP.format(a);
-    }
-
-    /** GE tax: 2% floored, capped at 5m, nothing under 50 gp. */
-    static long tax(int price) {
-        if (price < 50) return 0;
-        return Math.min(5_000_000L, (long) Math.floor(price * 0.02));
     }
 }

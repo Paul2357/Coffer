@@ -15,7 +15,8 @@ public final class OpenOfferPersistence {
         public int slot;
         public int itemId;
         public boolean buy;
-        public int sold, total, price;
+        public int sold, total;
+        public long price;
         public long openedAt;
         public double[] features;
         public int fv;

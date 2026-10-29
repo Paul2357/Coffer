@@ -100,7 +100,7 @@ public class GeCopilotCloudPlugin extends Plugin {
         applyGuide(SessionGuide.stage(geObserved, offers, trade), null, 0);
     }
 
-    private void applyGuide(SessionGuide.Stage next, String flipName, int placeBuy) {
+    private void applyGuide(SessionGuide.Stage next, String flipName, long placeBuy) {
         SessionGuide.Stage advanced = SessionGuide.advance(guideStage, next);
         String toast = SessionGuide.transitionToast(guideStage, advanced);
         guideStage = advanced;
@@ -675,7 +675,7 @@ public class GeCopilotCloudPlugin extends Plugin {
                 capture.snapshot(), geObserved);
             if (sync.tier != null) {
                 String topName = null;
-                int topPrice = 0;
+                long topPrice = 0;
                 if (!sync.flips.isEmpty() && sync.flips.get(0) != null) {
                     topName = sync.flips.get(0).name;
                     topPrice = sync.flips.get(0).placeBuy;
@@ -863,11 +863,11 @@ public class GeCopilotCloudPlugin extends Plugin {
                 capture.resolve(ev.getSlot(), o.getQuantitySold(), o.getTotalQuantity(), now, state.equals("EMPTY"));
             if (outcome != null) executor.execute(() -> { if (ensureLogin()) api.postOutcome(outcome); });
         }
-        // RuneLite widened GrandExchangeOffer.getPrice() from int to long (headroom for future
-        // high-value items). Our price model is int throughout and a single GE unit price can't
-        // exceed the ~2.147B int cap today, so narrow it back at this boundary.
+        // GrandExchangeOffer.getPrice() is long: since 30 September 2026 GE trades can exceed
+        // 2,147,483,647 gp (platinum tokens, https://oldschool.runescape.wiki/w/Grand_Exchange).
+        // Coffer carries gp as long end to end, so no narrowing here.
         com.gecopilot.client.trade.OpenOfferDto placed = capture.noteOpen(ev.getSlot(), state, o.getItemId(),
-            o.getQuantitySold(), o.getTotalQuantity(), (int) o.getPrice(), now);
+            o.getQuantitySold(), o.getTotalQuantity(), o.getPrice(), now);
         if (placed != null) schedulePlacementFeatures(ev.getSlot(), placed);
         CompletedFill fill = capture.onOffer(ev.getSlot(), state, o.getItemId(),
             o.getTotalQuantity(), o.getQuantitySold(), o.getSpent(), now);
@@ -879,7 +879,7 @@ public class GeCopilotCloudPlugin extends Plugin {
         }
         if (journal != null) {
             OfferEvent offerEvent = journal.onState(ev.getSlot(), state, o.getItemId(),
-                o.getTotalQuantity(), o.getQuantitySold(), (int) o.getPrice(), now);
+                o.getTotalQuantity(), o.getQuantitySold(), o.getPrice(), now);
             if (offerEvent != null) {
                 offerEvent.ownerId = captureOwner();
                 synchronized (this) {
@@ -899,7 +899,7 @@ public class GeCopilotCloudPlugin extends Plugin {
         final long openedAt = placed.openedAt;
         final int itemId = placed.itemId;
         final boolean buy = placed.buy;
-        final int price = placed.price;
+        final long price = placed.price;
         final int qty = placed.total;
         executor.execute(() -> {
             if (!ensureLogin()) return;

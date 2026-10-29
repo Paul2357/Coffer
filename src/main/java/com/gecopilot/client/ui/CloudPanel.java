@@ -2068,7 +2068,7 @@ public class CloudPanel extends PluginPanel {
         // Market margin is what the market pays, not your profit: neutral when your cost is partial.
         Color mc = w.partialCost ? NEUTRAL_VALUE : edgeColor(w.margin);
         card.add(row("Market margin", signedGp(w.margin), mc));
-        int known = knownCost(w);
+        long known = knownCost(w);
         if (w.partialCost && known > 0) {
             card.add(row(costLabel(w), GP.format(known) + " gp", ColorScheme.LIGHT_GRAY_COLOR));
             JLabel st = centered(costKnownLine(w));
@@ -2087,7 +2087,7 @@ public class CloudPanel extends PluginPanel {
     }
 
     /** Average over the known units (servers before 0.1.32 sent it as buyCost). */
-    static int knownCost(WatchDto w) {
+    static long knownCost(WatchDto w) {
         return w.knownCost > 0 ? w.knownCost : w.buyCost;
     }
 

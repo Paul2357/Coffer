@@ -41,7 +41,7 @@ public class WikiTimeseriesTest {
     @Test public void dropsOutOfRangePrices() {
         WikiTimeseries w = new WikiTimeseries(null, GSON);
         List<SparklineDto.Point> pts = w.parse("{\"data\":["
-            + "{\"timestamp\":1,\"avgHighPrice\":2147483648,\"avgLowPrice\":5},"           // high > int max
+            + "{\"timestamp\":1,\"avgHighPrice\":2149631130648,\"avgLowPrice\":5},"        // high > the GE ceiling
             + "{\"timestamp\":2,\"avgHighPrice\":-7,\"avgLowPrice\":2147483647},"           // negative high, low = int max
             + "{\"timestamp\":3,\"avgHighPrice\":100000000000000000000,\"avgLowPrice\":0}," // 1e20 would wrap via getAsLong
             + "{\"timestamp\":4,\"avgHighPrice\":\"abc\",\"avgLowPrice\":1e300}"
@@ -51,6 +51,17 @@ public class WikiTimeseriesTest {
         assertEquals(5L, pts.get(0).low);
         assertEquals(0L, pts.get(1).high);
         assertEquals((long) Integer.MAX_VALUE, pts.get(1).low);
+    }
+
+    @Test public void keepsPricesAboveIntMaxUpToTheGeCeiling() {
+        WikiTimeseries w = new WikiTimeseries(null, GSON);
+        List<SparklineDto.Point> pts = w.parse("{\"data\":["
+            + "{\"timestamp\":1,\"avgHighPrice\":3000000000,\"avgLowPrice\":2147483648},"
+            + "{\"timestamp\":2,\"avgHighPrice\":2149631130647,\"avgLowPrice\":0}]}");
+        assertEquals(2, pts.size());
+        assertEquals(3_000_000_000L, pts.get(0).high);
+        assertEquals(2_147_483_648L, pts.get(0).low);
+        assertEquals(2_149_631_130_647L, pts.get(1).high);
     }
 
     @Test public void parsesVolumesAndRangeChecksTimestamps() {

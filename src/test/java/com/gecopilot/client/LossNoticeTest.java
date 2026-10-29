@@ -10,7 +10,7 @@ public class LossNoticeTest {
         PositionDto p = new PositionDto();
         p.id = 30810; p.name = "Contract of Glyphic Attenuation"; p.buy = false; p.total = 42; p.price = 157_196;
         p.edge = -1_699_698L; p.advice = "Sells at a loss"; p.warn = true; p.verdict = "REPRICE";
-        p.target = 198_491; p.targetLabel = "Breakeven at";
+        p.target = 198_491L; p.targetLabel = "Breakeven at";
         return p;
     }
 
