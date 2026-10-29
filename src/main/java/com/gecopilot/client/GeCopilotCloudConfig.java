@@ -58,4 +58,8 @@ public interface GeCopilotCloudConfig extends Config {
     @ConfigItem(keyName = "offerChart", name = "GE offer price chart", position = 3,
         description = "On the GE offer and offer status screens, show the item's price history with your offer price and Coffer's suggested buy and sell. The chart covers the chatbox while those screens are open")
     default boolean offerChart() { return true; }
+
+    @ConfigItem(keyName = "slotTimers", name = "GE slot timers", position = 4,
+        description = "On the GE offers screen, show how long each open offer has gone without a fill (or since you placed it): amber chip after 15 minutes, red after an hour.")
+    default boolean slotTimers() { return true; }
 }

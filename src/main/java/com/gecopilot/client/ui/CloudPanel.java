@@ -1,6 +1,7 @@
 package com.gecopilot.client.ui;
 
 import com.gecopilot.client.api.*;
+import com.gecopilot.client.trade.BuyLimits;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.ui.ColorScheme;
 import net.runelite.client.ui.FontManager;
@@ -235,6 +236,11 @@ public class CloudPanel extends PluginPanel {
             if (c.isVisible()) return new Dimension(base.width, c.getPreferredSize().height);
         return base;
     }
+
+    /** Buy-limit windows this client saw; the plugin swaps in its tracker. Read when cards are built. */
+    private volatile BuyLimits buyLimits = new BuyLimits();
+
+    public void setBuyLimits(BuyLimits limits) { if (limits != null) buyLimits = limits; }
 
     public CloudPanel(ItemManager itemManager) {
         this.itemManager = itemManager;
@@ -1957,7 +1963,7 @@ public class CloudPanel extends PluginPanel {
             herd.setForeground(f.crowdCount >= HERD_WARN ? ColorScheme.BRAND_ORANGE : ColorScheme.LIGHT_GRAY_COLOR);
             card.add(herd);
         }
-        JLabel lim = limitLine(f.limit, f.limitLeft, 0);
+        JLabel lim = limitLine(f.id, f.limit, f.limitLeft);
         if (lim != null) card.add(lim);
         return card;
     }
@@ -1971,7 +1977,7 @@ public class CloudPanel extends PluginPanel {
         exp.setForeground(ColorScheme.PROGRESS_COMPLETE_COLOR);
         card.add(exp);
         if (sparklineOpen.contains(r.id)) card.add(sparklineBlock(r.id));
-        JLabel lim = limitLine(r.limit, r.limitLeft, r.limitResetMs);
+        JLabel lim = limitLine(r.id, r.limit, r.limitLeft);
         if (lim != null) card.add(lim);
         return card;
     }
@@ -2167,6 +2173,8 @@ public class CloudPanel extends PluginPanel {
 
     /** Width the item name may use beside the icon: 187px card interior minus the 24px icon and gaps. */
     static final int TITLE_W = 157;
+    /** Where the item name starts in a card: after the 24px icon and the name's 4px gap. */
+    static final int TITLE_X = 28;
 
     /**
      * Icon + the full item name wrapped onto up to 2 lines (tooltip always has the full name), and,
@@ -2201,7 +2209,7 @@ public class CloudPanel extends PluginPanel {
             JPanel under = new JPanel(new BorderLayout());
             under.setBackground(ColorScheme.DARKER_GRAY_COLOR);
             under.setAlignmentX(Component.LEFT_ALIGNMENT);
-            under.setBorder(BorderFactory.createEmptyBorder(2, 28, 0, 0));
+            under.setBorder(BorderFactory.createEmptyBorder(2, TITLE_X, 0, 0));
             if (tag != null) under.add(tag, BorderLayout.WEST);
             if (controls != null && controls.length > 0) {
                 JPanel east = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
@@ -2484,15 +2492,74 @@ public class CloudPanel extends PluginPanel {
         return r;
     }
 
-    private JLabel limitLine(int limit, int limitLeft, long resetMs) {
-        if (limit <= 0 || limitLeft >= limit) return null;
-        String rs = resetMs > 0 ? " · resets " + fmtTime((resetMs - System.currentTimeMillis()) / 3_600_000.0) : "";
-        JLabel l = centered(GP.format(limitLeft) + " of " + GP.format(limit) + " limit left" + rs);
-        l.setForeground(ColorScheme.BRAND_ORANGE);
+    /** The server's limit and limit left, plus the 4h window this client saw (reset time, local buys). */
+    private JLabel limitLine(int id, int limit, int limitLeft) {
+        long now = System.currentTimeMillis();
+        int serverUsed = limit > 0 ? Math.max(0, limit - limitLeft) : 0;
+        return limitLine(buyLimits.status(id, limit, serverUsed, now), now, java.time.ZoneId.systemDefault());
+    }
+
+    static final Color LIMIT_TEXT = new Color(0xf2, 0xef, 0xe6);
+    static final Color LIMIT_LOW = new Color(0xff, 0xb0, 0x20);
+    static final Color LIMIT_REACHED = new Color(0xff, 0x7b, 0x72);
+    static final Color RESET_UNKNOWN = new Color(0x8a, 0x8a, 0x8a);
+    private static final java.time.format.DateTimeFormatter CLOCK = java.time.format.DateTimeFormatter.ofPattern("HH:mm");
+
+    /**
+     * "1,200 of 5,000 left" over a dimmer "resets 15:42 (in 2h 13m)"; null while nothing is used.
+     * Left-aligned with the item name. The clock time is fixed; the "in ..." part is as fresh as the
+     * last panel refresh.
+     */
+    static JLabel limitLine(BuyLimits.Status s, long nowMs, java.time.ZoneId zone) {
+        String text = limitText(s);
+        if (text == null) return null;
+        Color main = limitColor(s);
+        String reset = resetText(s, nowMs, zone);
+        if (reset == null) {
+            JLabel l = titleAligned(text);
+            l.setForeground(main);
+            return l;
+        }
+        // Two lines: one line with the reset is wider than the sidebar card.
+        Color dim = s.resetAtMs > 0 ? ColorScheme.LIGHT_GRAY_COLOR : RESET_UNKNOWN;
+        JLabel l = titleAligned("<html><font color='" + hex(main) + "'>" + text + "</font><br><font color='"
+            + hex(dim) + "'>" + reset + "</font></html>");
+        l.setForeground(main);
         return l;
     }
 
-    private JLabel centered(String text) {
+    /** A small-font line that starts where the card's item name does. */
+    private static JLabel titleAligned(String text) {
+        JLabel l = new JLabel(text);
+        l.setFont(FontManager.getRunescapeSmallFont());
+        l.setBorder(BorderFactory.createEmptyBorder(0, TITLE_X, 0, 0));
+        l.setAlignmentX(Component.LEFT_ALIGNMENT);
+        l.setMaximumSize(new Dimension(Integer.MAX_VALUE, l.getPreferredSize().height));
+        return l;
+    }
+
+    static String limitText(BuyLimits.Status s) {
+        if (s == null || s.used <= 0) return null;
+        if (!s.known()) return "Bought " + GP.format(s.used) + " (limit unknown)";
+        if (s.reached()) return "Limit reached";
+        return GP.format(s.remaining()) + " of " + GP.format(s.limit) + " left";
+    }
+
+    /** "resets 15:42 (in 2h 13m)" from this client's window; "reset time unknown" for a server-only count. */
+    static String resetText(BuyLimits.Status s, long nowMs, java.time.ZoneId zone) {
+        if (s == null || s.used <= 0) return null;
+        if (s.resetAtMs <= 0) return s.known() ? "reset time unknown" : null;
+        String at = CLOCK.format(java.time.Instant.ofEpochMilli(s.resetAtMs).atZone(zone));
+        return "resets " + at + " (in " + ShortDuration.format(Math.max(0, s.resetAtMs - nowMs)) + ")";
+    }
+
+    static Color limitColor(BuyLimits.Status s) {
+        if (s == null || !s.known()) return ColorScheme.LIGHT_GRAY_COLOR;
+        if (s.reached()) return LIMIT_REACHED;
+        return GeOfferOverlay.lowLimit(s) ? LIMIT_LOW : LIMIT_TEXT;
+    }
+
+    private static JLabel centered(String text) {
         JLabel l = new JLabel(text);
         l.setFont(FontManager.getRunescapeSmallFont());
         l.setHorizontalAlignment(SwingConstants.CENTER);

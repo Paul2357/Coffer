@@ -81,7 +81,7 @@ public class OfferChartOverlay extends Overlay {
         GrandExchangeOffer slotOffer = selectedSlotOffer(client);
         int itemId = activeItemId(client);
         Widget prompt = client.getWidget(InterfaceID.Chatbox.MES_TEXT2);
-        if (!visible(enabled.getAsBoolean(), itemId, geFrameText(),
+        if (!visible(enabled.getAsBoolean(), itemId, geFrameText(client),
             client.getVarcIntValue(VarClientID.MESLAYERMODE), prompt == null ? null : prompt.getText())) {
             hide();
             return null;
@@ -153,7 +153,8 @@ public class OfferChartOverlay extends Overlay {
         return o != null && o.getItemId() > 0 ? o : null;
     }
 
-    private String geFrameText() {
+    /** Text of the GE frame's title widgets ("Set up offer", "Offer status", ...); null when closed. Client thread. */
+    static String geFrameText(Client client) {
         Widget frame = client.getWidget(InterfaceID.GeOffers.FRAME);
         if (frame == null) return null;
         Widget[] kids = frame.getDynamicChildren();

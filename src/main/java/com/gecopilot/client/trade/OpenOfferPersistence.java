@@ -18,6 +18,7 @@ public final class OpenOfferPersistence {
         public int sold, total;
         public long price;
         public long openedAt;
+        public long movedAt;
         public double[] features;
         public int fv;
     }
@@ -36,6 +37,7 @@ public final class OpenOfferPersistence {
                 r.total = o.total;
                 r.price = o.price;
                 r.openedAt = o.openedAt;
+                r.movedAt = o.movedAt;
                 r.features = o.features;
                 r.fv = o.fv;
                 rows.add(r);
@@ -53,6 +55,7 @@ public final class OpenOfferPersistence {
             for (Row r : rows) {
                 if (r == null) continue;
                 OpenOfferDto o = new OpenOfferDto(r.itemId, r.buy, r.sold, r.total, r.price, r.openedAt);
+                if (r.movedAt > 0) o.movedAt = r.movedAt; // rows saved by older builds keep openedAt
                 o.features = r.features;
                 o.fv = r.fv;
                 out.put(r.slot, o);

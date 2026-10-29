@@ -6,6 +6,7 @@ import com.gecopilot.client.ui.CloudPanel;
 import com.gecopilot.client.ui.GeOfferOverlay;
 import com.gecopilot.client.ui.OfferChartOverlay;
 import com.gecopilot.client.ui.SessionGuide;
+import com.gecopilot.client.ui.SlotTimerOverlay;
 import com.google.gson.Gson;
 import com.google.inject.Provides;
 import net.runelite.api.Client;
@@ -58,6 +59,11 @@ public class GeCopilotCloudPlugin extends Plugin {
     private NavigationButton navButton;
     private GeOfferOverlay overlay;
     private volatile OfferChartOverlay chartOverlay; // created in startUp(), removed in shutDown()
+    private SlotTimerOverlay slotTimerOverlay;          // created in startUp(), removed in shutDown()
+    // Buy-limit windows (4h from the first buy) seen by this client, per RS account.
+    private final BuyLimits buyLimits = new BuyLimits();
+    // What the server counted against each item's limit at the last sync (limit - limitLeft).
+    private volatile Map<Integer, Integer> serverLimitUsed = new HashMap<>();
     private ApiClient api;
     private java.util.concurrent.ScheduledFuture<?> pollFuture; // cancelled in shutDown()
     private volatile OfferCapture capture; // built in startUp(); read from poll + GE-event threads
@@ -136,9 +142,9 @@ public class GeCopilotCloudPlugin extends Plugin {
 
     @Override
     protected void startUp() {
-        capture = new OfferCapture(); // empty until the RS account is known (ensureAccountLoaded)
-        journal = new OfferJournal();
+        resetTradeSession();
         panel = new CloudPanel(itemManager);
+        panel.setBuyLimits(buyLimits);
         pollCycle = new PollCycle(
             new PollPolicy(() -> System.nanoTime() / 1_000_000L, this::clientMinimised), new SyncSteps());
         statusMonitor = new StatusMonitor(pollCycle.policy(), () -> System.nanoTime() / 1_000_000L);
@@ -338,8 +344,10 @@ public class GeCopilotCloudPlugin extends Plugin {
         g.dispose();
         navButton = NavigationButton.builder().tooltip("Coffer").icon(icon).panel(panel).build();
         clientToolbar.addNavigation(navButton);
-        overlay = new GeOfferOverlay(client, config::priceWarnings, config::minMargin, config::minRoi);
+        overlay = new GeOfferOverlay(client, config::priceWarnings, config::minMargin, config::minRoi, this::limitStatus);
         overlayManager.add(overlay);
+        slotTimerOverlay = new SlotTimerOverlay(client, capture, config::slotTimers);
+        overlayManager.add(slotTimerOverlay);
         TimeseriesCache timeseries = new TimeseriesCache(new WikiTimeseries(http, gson), () -> System.nanoTime() / 1_000_000L);
         chartOverlay = new OfferChartOverlay(client, timeseries, config::offerChart);
         overlayManager.add(chartOverlay);
@@ -419,6 +427,10 @@ public class GeCopilotCloudPlugin extends Plugin {
         SwingUtilities.invokeLater(this::unwatchFrame);
         clientToolbar.removeNavigation(navButton);
         overlayManager.remove(overlay);
+        if (slotTimerOverlay != null) {
+            overlayManager.remove(slotTimerOverlay);
+            slotTimerOverlay = null;
+        }
         if (chartOverlay != null) {
             mouseManager.unregisterMouseListener(chartOverlay.mouseListener());
             overlayManager.remove(chartOverlay);
@@ -461,6 +473,7 @@ public class GeCopilotCloudPlugin extends Plugin {
     // Called from both the poll (executor) thread and GE events (client thread) — synchronized so a
     // concurrent account load can't interleave the rebind + pending-queue swap.
     private synchronized void ensureAccountLoaded() {
+        if (sessionReset) dropPreviousSession(); // before the checks below: loadedAccount is stale
         long acct = accountHash; // cached from the client thread; never call getAccountHash() here
         if (acct == -1 || acct == loadedAccount) return;
         boolean firstLoad = (loadedAccount == Long.MIN_VALUE);
@@ -483,6 +496,7 @@ public class GeCopilotCloudPlugin extends Plugin {
         capture.restoreOpen(loadOpens(acct));
         capture.setOpenSaver(opens -> saveOpens(acct, opens));
         capture.flushOpen();
+        buyLimits.rebind(loadLimits(acct), m -> saveLimits(acct, m), firstLoad);
         if (firstLoad) {
             // Keep fills captured before the account was known (e.g. an offline sell that replayed on
             // login before the first game tick cached accountHash); merge with the account's persisted
@@ -506,20 +520,73 @@ public class GeCopilotCloudPlugin extends Plugin {
         }
     }
 
+    /**
+     * Fresh per-session trade state. RuneLite reuses this plugin instance when it is toggled off and
+     * on, so the account must be re-bound too: a stale loadedAccount skipped the reload, leaving the
+     * new capture without its saved offers or saver (offers stopped saving, and a fill on a restored
+     * buy counted against the buy limit a second time).
+     * <p>
+     * Runs from startUp(), on the Swing EDT (RuneLite's PluginManager asserts that), so it must not
+     * wait on this plugin's lock: flushTrades/flushOfferEvents hold it across their HTTP calls (up to
+     * the 70s call timeout). The account hash and GE flag are cleared here, so the first poll can't
+     * load or sync the account seen before the toggle (the player may have logged into another
+     * since); the next game tick or GE event reads the hash again. The queues are dropped later, by
+     * {@link #dropPreviousSession}, under the lock on the poll or GE-event thread, which every
+     * account load goes through first.
+     */
+    void resetTradeSession() {
+        capture = new OfferCapture(); // empty until the RS account is known (ensureAccountLoaded)
+        journal = new OfferJournal();
+        accountHash = -1;
+        geObserved = false;
+        // BuyLimits has its own short lock (never held across HTTP). Saved first; no saver until the
+        // next account is known, so a fill seen before then is not written to the previous account.
+        buyLimits.save(System.currentTimeMillis());
+        buyLimits.rebind(null, null, false);
+        sessionReset = true;
+    }
+
+    /** Set by resetTradeSession, cleared under the lock once the previous session's queues are dropped. */
+    private volatile boolean sessionReset = false;
+
+    /**
+     * The previous session's account, queues and limit windows: saved (normally already, since every
+     * change saves), then dropped, so the next load reads them back once instead of merging them in
+     * as pre-login state (which doubled the queues on every toggle, and handed them to another
+     * character logging in next). Until this runs, loadedAccount still names that account, so a flush
+     * already in flight keeps saving its queue under the right key.
+     */
+    private synchronized void dropPreviousSession() {
+        sessionReset = false;
+        if (loadedAccount != Long.MIN_VALUE) {
+            savePending();
+            saveEvents();
+            pendingTrades.clear();
+            pendingEvents.clear();
+            buyLimits.save(System.currentTimeMillis());
+            buyLimits.rebind(null, null, false);
+        }
+        loadedAccount = Long.MIN_VALUE;
+    }
+
+    /** Account-scoped persisted state, under this plugin's config group. Package-visible for tests. */
+    String cfg(String key) { return configManager.getConfiguration("gecopilotcloud", key); }
+    void setCfg(String key, String value) { configManager.setConfiguration("gecopilotcloud", key, value); }
+
     /** One-time: adopt pre-scoping global keys into the first account seen, then clear them. */
     private void migrateLegacy(long acct) {
-        String sigs = configManager.getConfiguration("gecopilotcloud", "fillSigs");
-        String pend = configManager.getConfiguration("gecopilotcloud", "pendingTrades");
+        String sigs = cfg("fillSigs");
+        String pend = cfg("pendingTrades");
         if (sigs != null && !sigs.isEmpty()
-                && isBlank(configManager.getConfiguration("gecopilotcloud", "fillSigs_" + acct))) {
-            configManager.setConfiguration("gecopilotcloud", "fillSigs_" + acct, sigs);
+                && isBlank(cfg("fillSigs_" + acct))) {
+            setCfg("fillSigs_" + acct, sigs);
         }
         if (pend != null && !pend.isEmpty()
-                && isBlank(configManager.getConfiguration("gecopilotcloud", "pendingTrades_" + acct))) {
-            configManager.setConfiguration("gecopilotcloud", "pendingTrades_" + acct, pend);
+                && isBlank(cfg("pendingTrades_" + acct))) {
+            setCfg("pendingTrades_" + acct, pend);
         }
-        configManager.setConfiguration("gecopilotcloud", "fillSigs", "");
-        configManager.setConfiguration("gecopilotcloud", "pendingTrades", "");
+        setCfg("fillSigs", "");
+        setCfg("pendingTrades", "");
     }
     private static boolean isBlank(String s) { return s == null || s.isEmpty(); }
 
@@ -527,7 +594,7 @@ public class GeCopilotCloudPlugin extends Plugin {
     private void saveSigs(long acct, Map<Integer, String> sigs) { saveSigs(acct, "fillSigs_", sigs); }
 
     private Map<Integer, String> loadSigs(long acct, String prefix) {
-        String json = configManager.getConfiguration("gecopilotcloud", prefix + acct);
+        String json = cfg(prefix + acct);
         if (isBlank(json)) return new HashMap<>();
         try {
             Map<Integer, String> m = gson.fromJson(json,
@@ -536,14 +603,44 @@ public class GeCopilotCloudPlugin extends Plugin {
         } catch (Exception e) { return new HashMap<>(); }
     }
     private void saveSigs(long acct, String prefix, Map<Integer, String> sigs) {
-        configManager.setConfiguration("gecopilotcloud", prefix + acct, gson.toJson(sigs));
+        setCfg(prefix + acct, gson.toJson(sigs));
     }
 
     private Map<Integer, OpenOfferDto> loadOpens(long acct) {
-        return OpenOfferPersistence.fromJson(gson, configManager.getConfiguration("gecopilotcloud", "openOffers_" + acct));
+        return OpenOfferPersistence.fromJson(gson, cfg("openOffers_" + acct));
     }
     private void saveOpens(long acct, Map<Integer, OpenOfferDto> opens) {
-        configManager.setConfiguration("gecopilotcloud", "openOffers_" + acct, OpenOfferPersistence.toJson(gson, opens));
+        setCfg("openOffers_" + acct, OpenOfferPersistence.toJson(gson, opens));
+    }
+
+    private Map<Integer, BuyLimits.Window> loadLimits(long acct) {
+        String json = cfg("buyLimits_" + acct);
+        if (isBlank(json)) return new HashMap<>();
+        try {
+            Map<Integer, BuyLimits.Window> m = gson.fromJson(json,
+                new com.google.gson.reflect.TypeToken<Map<Integer, BuyLimits.Window>>() {}.getType());
+            return m != null ? m : new HashMap<>();
+        } catch (Exception e) { return new HashMap<>(); }
+    }
+    private void saveLimits(long acct, Map<Integer, BuyLimits.Window> m) {
+        setCfg("buyLimits_" + acct, gson.toJson(m));
+    }
+
+    /** GE overlay: the item's limit from RuneLite's item stats, the server's count, and the window seen here. Client thread. */
+    private BuyLimits.Status limitStatus(int itemId) {
+        net.runelite.client.game.ItemStats stats = itemManager.getItemStats(itemId);
+        int limit = stats != null ? stats.getGeLimit() : 0;
+        return buyLimits.status(itemId, limit, serverLimitUsed.getOrDefault(itemId, 0), System.currentTimeMillis());
+    }
+
+    /** limit - limitLeft per item from the last sync's flips and plan rows. */
+    static Map<Integer, Integer> serverLimitUsed(java.util.List<CloudFlip> flips, java.util.List<PlanRowDto> plan) {
+        Map<Integer, Integer> out = new HashMap<>();
+        if (flips != null) for (CloudFlip f : flips)
+            if (f != null && f.limit > 0) out.merge(f.id, Math.max(0, f.limit - f.limitLeft), Math::max);
+        if (plan != null) for (PlanRowDto r : plan)
+            if (r != null && r.limit > 0) out.merge(r.id, Math.max(0, r.limit - r.limitLeft), Math::max);
+        return out;
     }
 
     private boolean ensureLogin() {
@@ -685,6 +782,7 @@ public class GeCopilotCloudPlugin extends Plugin {
             log.debug("[Coffer] sync: flips={} watch={} positions={} tier={}",
                 sync.flips.size(), sync.watch.size(), sync.positions.size(), sync.tier);
             lastWatch = sync.watch;
+            serverLimitUsed = serverLimitUsed(sync.flips, sync.plan);
             return sync;
         }
         @Override public Dashboard dashboard() {
@@ -856,6 +954,11 @@ public class GeCopilotCloudPlugin extends Plugin {
 
         long now = System.currentTimeMillis();
         String state = o.getState().name();
+        // Buy-limit window: units bought since the last event on this slot, read before resolve/noteOpen move it.
+        // With no account hash while an account is loaded, a fill can't be attributed: don't charge it
+        // to whichever character was loaded before.
+        int bought = BuyLimits.boughtDelta(state, o.getItemId(), o.getQuantitySold(), capture.openAt(ev.getSlot()));
+        if (bought > 0 && !(accountHash == -1 && loadedAccount != Long.MIN_VALUE)) buyLimits.record(o.getItemId(), bought, now);
         // Emit an outcome (fill or not) BEFORE noteOpen clears the slot on terminal/EMPTY states.
         boolean resolved = state.equals("EMPTY") || state.equals("BOUGHT") || state.equals("SOLD") || state.startsWith("CANCELLED");
         if (resolved) {
@@ -918,7 +1021,7 @@ public class GeCopilotCloudPlugin extends Plugin {
         if (uid != null) return uid;
         long acct = loadedAccount;
         if (acct == Long.MIN_VALUE) return null;
-        String s = configManager.getConfiguration("gecopilotcloud", "lastCofferUser_" + acct);
+        String s = cfg("lastCofferUser_" + acct);
         try { return isBlank(s) ? null : Long.parseLong(s); } catch (NumberFormatException e) { return null; }
     }
 
@@ -926,8 +1029,8 @@ public class GeCopilotCloudPlugin extends Plugin {
         long acct = loadedAccount;
         if (acct == Long.MIN_VALUE) return;
         String v = Long.toString(uid);
-        if (!v.equals(configManager.getConfiguration("gecopilotcloud", "lastCofferUser_" + acct)))
-            configManager.setConfiguration("gecopilotcloud", "lastCofferUser_" + acct, v);
+        if (!v.equals(cfg("lastCofferUser_" + acct)))
+            setCfg("lastCofferUser_" + acct, v);
     }
 
     /**
@@ -949,7 +1052,7 @@ public class GeCopilotCloudPlugin extends Plugin {
     // a close or crash.
     private void savePending() {
         if (loadedAccount == Long.MIN_VALUE) return; // no account yet — nothing scoped to save under
-        configManager.setConfiguration("gecopilotcloud", "pendingTrades_" + loadedAccount,
+        setCfg("pendingTrades_" + loadedAccount,
             gson.toJson(new java.util.ArrayList<>(pendingTrades)));
     }
     /** Post this login's queued offer events. On failure they stay, so a logged-out stretch keeps them. */
@@ -989,13 +1092,13 @@ public class GeCopilotCloudPlugin extends Plugin {
 
     private synchronized void saveEvents() {
         if (loadedAccount == Long.MIN_VALUE) return;
-        configManager.setConfiguration("gecopilotcloud", "pendingOfferEvents_" + loadedAccount,
+        setCfg("pendingOfferEvents_" + loadedAccount,
             gson.toJson(new java.util.ArrayList<>(pendingEvents)));
     }
 
     private java.util.List<OfferEvent> loadEvents(long acct) {
         java.util.List<OfferEvent> out = new java.util.ArrayList<>();
-        String json = configManager.getConfiguration("gecopilotcloud", "pendingOfferEvents_" + acct);
+        String json = cfg("pendingOfferEvents_" + acct);
         if (isBlank(json)) return out;
         try {
             java.util.List<OfferEvent> list = gson.fromJson(json,
@@ -1007,7 +1110,7 @@ public class GeCopilotCloudPlugin extends Plugin {
 
     private java.util.List<CompletedFill> loadPending(long acct) {
         java.util.List<CompletedFill> out = new java.util.ArrayList<>();
-        String json = configManager.getConfiguration("gecopilotcloud", "pendingTrades_" + acct);
+        String json = cfg("pendingTrades_" + acct);
         if (isBlank(json)) return out;
         try {
             java.util.List<CompletedFill> list = gson.fromJson(json,

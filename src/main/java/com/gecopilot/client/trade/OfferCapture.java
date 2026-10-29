@@ -115,12 +115,14 @@ public class OfferCapture {
                 && prev.price == price && prev.total == total;
             long openedAt = same ? prev.openedAt : nowMs;
             OpenOfferDto dto = new OpenOfferDto(itemId, buying, sold, total, price, openedAt);
+            // A fill moves the offer; a replay of the same quantity (login, restore) does not.
+            if (same) dto.movedAt = sold != prev.sold ? nowMs : prev.lastMovedAt();
             if (same && prev.features != null) {
                 dto.features = prev.features;
                 dto.fv = prev.fv;
             }
             open.put(slot, dto);
-            if (!same) notifyOpen();
+            if (!same || sold != prev.sold) notifyOpen();
             return same ? null : dto;
         }
         // Login replays EMPTY for every slot before the real state. A restored offer has not been
@@ -142,6 +144,11 @@ public class OfferCapture {
         o.features = java.util.Arrays.copyOf(features, features.length);
         o.fv = fv;
         notifyOpen();
+    }
+
+    /** The live offer tracked for a GE slot (0-based), or null. */
+    public OpenOfferDto openAt(int slot) {
+        return open.get(slot);
     }
 
     public java.util.List<OpenOfferDto> snapshot() {
