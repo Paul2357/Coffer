@@ -38,6 +38,9 @@ public class OfferCapture {
     /** Slots whose live state we have actually seen this JVM session. A restored offer is not in
      *  here until a real GE event arrives, so the login EMPTY replay cannot resolve it early. */
     private final java.util.Set<Integer> liveThisSession = ConcurrentHashMap.newKeySet();
+    /** Slots that have seen a login EMPTY placeholder this session and have not yet become live
+     *  or been confirmed empty after the replay settled. */
+    private final java.util.Set<Integer> emptySeen = ConcurrentHashMap.newKeySet();
     private volatile java.util.function.Consumer<Map<Integer, OpenOfferDto>> onOpenChange = m -> {};
 
     /** In-memory only (tests / no persistence). */
@@ -108,6 +111,7 @@ public class OfferCapture {
      */
     public OpenOfferDto noteOpen(int slot, String state, int itemId, int sold, int total, long price, long nowMs) {
         if (state.equals("BUYING") || state.equals("SELLING")) {
+            emptySeen.remove(slot);
             liveThisSession.add(slot);
             boolean buying = state.equals("BUYING");
             OpenOfferDto prev = open.get(slot);
@@ -126,8 +130,13 @@ public class OfferCapture {
             return same ? null : dto;
         }
         // Login replays EMPTY for every slot before the real state. A restored offer has not been
-        // seen live this session, so that placeholder must not drop it.
-        if (state.equals("EMPTY") && !liveThisSession.contains(slot)) return null;
+        // seen live this session, so that placeholder must not drop it yet. Remember the slot so
+        // {@link #dropUnconfirmedEmpties} can clear it if the real state never arrives.
+        if (state.equals("EMPTY") && !liveThisSession.contains(slot)) {
+            emptySeen.add(slot);
+            return null;
+        }
+        emptySeen.remove(slot);
         liveThisSession.remove(slot);
         if (open.remove(slot) != null) notifyOpen();
         return null;
@@ -155,10 +164,45 @@ public class OfferCapture {
         return new java.util.ArrayList<>(open.values());
     }
 
+    /** True while a login EMPTY has been seen for a slot that has not become live or been settled. */
+    public boolean hasUnconfirmedEmpties() {
+        return !emptySeen.isEmpty();
+    }
+
+    /**
+     * Drop a restored offer in {@code slot} if this session has not seen it live. Used after login
+     * GE state has settled and the slot is actually EMPTY (event stream or {@code getGrandExchangeOffers}).
+     * @return true if an offer was removed
+     */
+    public boolean dropUnseen(int slot) {
+        emptySeen.remove(slot);
+        if (liveThisSession.contains(slot)) return false;
+        if (open.remove(slot) == null) return false;
+        notifyOpen();
+        return true;
+    }
+
+    /**
+     * After login GE events have settled, drop restored offers whose slots only saw EMPTY — the
+     * real state never arrived, so the offer is no longer open.
+     * @return true if any offer was removed
+     */
+    public boolean dropUnconfirmedEmpties() {
+        boolean changed = false;
+        for (Integer slot : new java.util.ArrayList<>(emptySeen)) {
+            emptySeen.remove(slot);
+            if (slot == null || liveThisSession.contains(slot)) continue;
+            if (open.remove(slot) != null) changed = true;
+        }
+        if (changed) notifyOpen();
+        return changed;
+    }
+
     /** Drop all tracked live offers — used on a real RS account switch (the new character's login
      *  events repopulate). NOT called on first load, which keeps this session's already-noted offers. */
     public void clearOpen() {
         liveThisSession.clear();
+        emptySeen.clear();
         if (open.isEmpty()) return;
         open.clear();
         notifyOpen();
@@ -173,6 +217,7 @@ public class OfferCapture {
 
     public Outcome resolve(int slot, int sold, int total, long nowMs, boolean fromEmpty) {
         if (fromEmpty && !liveThisSession.contains(slot)) return null;
+        emptySeen.remove(slot);
         liveThisSession.remove(slot);
         OpenOfferDto o = open.remove(slot);
         if (o == null) return null;

@@ -296,6 +296,51 @@ public class GeCopilotCloudPluginToggleTest {
         assertEquals(events, queue(p, "pendingEvents").size());
     }
 
+    @Test public void lastClearedOfferIsNotShownAfterLoginEmptySettles() throws Exception {
+        final int sand = 1783;
+        TestPlugin p = plugin();
+        p.store.put("openOffers_" + ACCT,
+            "[{\"slot\":3,\"itemId\":" + sand + ",\"buy\":true,\"sold\":26000,\"total\":27180,\"price\":8,\"openedAt\":1000}]");
+        java.util.List<JsonObject> synced = new java.util.ArrayList<>();
+        OkHttpClient fake = new OkHttpClient.Builder().addInterceptor(chain -> {
+            String out = "{\"flips\":[],\"positions\":[]}";
+            if (chain.request().url().encodedPath().equals("/api/flips")) {
+                okio.Buffer buf = new okio.Buffer();
+                chain.request().body().writeTo(buf);
+                synced.add(RuneLiteAPI.GSON.fromJson(buf.readUtf8(), JsonObject.class));
+            }
+            return new Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("ok")
+                .body(ResponseBody.create(MediaType.parse("application/json"), out)).build();
+        }).build();
+        ApiClient api = new ApiClient(fake, RuneLiteAPI.GSON, "http://coffer.test");
+        api.setToken("t");
+        set(p, "api", api);
+        set(p, "config", Proxy.newProxyInstance(GeCopilotCloudConfig.class.getClassLoader(), new Class<?>[]{GeCopilotCloudConfig.class},
+            (proxy, m, args) -> {
+                switch (m.getName()) {
+                    case "pace": return "steady";
+                    case "access": return "all";
+                    default: return defaultValue(m.getReturnType());
+                }
+            }));
+
+        startUp(p);
+        p.onGrandExchangeOfferChanged(event(3, 0, GrandExchangeOfferState.EMPTY, 0, 0));
+        poll(p, false);
+        JsonObject mid = synced.get(0);
+        assertTrue("restored offer still in the mid-replay snapshot: " + mid, mid.toString().contains("\"itemId\":" + sand));
+        assertFalse("offers not claimed known while the EMPTY placeholder is unconfirmed",
+            mid.get("offersKnown").getAsBoolean());
+
+        p.settleOpenOffers();
+        poll(p, false);
+        JsonObject after = synced.get(1);
+        assertEquals("last open offer cleared => no open offer shown: " + after,
+            0, after.getAsJsonArray("openOffers").size());
+        assertTrue(after.get("offersKnown").getAsBoolean());
+        assertFalse(String.valueOf(p.store.get("openOffers_" + ACCT)).contains("\"itemId\":" + sand));
+    }
+
     /** What pollTick / poll do: load the account, then the sync steps (and the nudge after a sync). */
     private static void poll(GeCopilotCloudPlugin p, boolean nudge) throws Exception {
         invoke(p, "ensureAccountLoaded");

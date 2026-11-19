@@ -12,6 +12,7 @@ import com.google.inject.Provides;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.GrandExchangeOffer;
+import net.runelite.api.GrandExchangeOfferState;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.GrandExchangeOfferChanged;
@@ -424,6 +425,7 @@ public class GeCopilotCloudPlugin extends Plugin {
         // only stop our own tasks) so nothing keeps firing after the plugin is disabled.
         if (pollFuture != null) pollFuture.cancel(false);
         if (refreshFuture != null) refreshFuture.cancel(false);
+        if (settleFuture != null) settleFuture.cancel(false);
         SwingUtilities.invokeLater(this::unwatchFrame);
         clientToolbar.removeNavigation(navButton);
         overlayManager.remove(overlay);
@@ -539,6 +541,7 @@ public class GeCopilotCloudPlugin extends Plugin {
         journal = new OfferJournal();
         accountHash = -1;
         geObserved = false;
+        if (settleFuture != null) settleFuture.cancel(false);
         // BuyLimits has its own short lock (never held across HTTP). Saved first; no saver until the
         // next account is known, so a fill seen before then is not written to the previous account.
         buyLimits.save(System.currentTimeMillis());
@@ -769,7 +772,7 @@ public class GeCopilotCloudPlugin extends Plugin {
         @Override public SyncResult sync() {
             SyncResult sync = api.sync(config.bankroll(), config.slots(), config.pace(), config.access(),
                 config.minVolume(), config.minMargin(), config.minRoi(), config.fillTarget(),
-                capture.snapshot(), geObserved);
+                capture.snapshot(), offersKnown());
             if (sync.tier != null) {
                 String topName = null;
                 long topPrice = 0;
@@ -805,6 +808,41 @@ public class GeCopilotCloudPlugin extends Plugin {
     private synchronized void scheduleRefresh() {
         if (refreshFuture != null) refreshFuture.cancel(false);
         refreshFuture = executor.schedule(this::syncAndRender, 1500, TimeUnit.MILLISECONDS);
+    }
+
+    // After the login EMPTY-then-real-state burst settles, drop restored offers whose slots are
+    // actually empty, then sync. A poll that fires mid-burst must not do this: the real state may
+    // still be in flight, and offersKnown stays false while those placeholders are unconfirmed.
+    private volatile java.util.concurrent.ScheduledFuture<?> settleFuture;
+    private synchronized void scheduleOfferSettle() {
+        if (settleFuture != null) settleFuture.cancel(false);
+        settleFuture = executor.schedule(() -> clientThread.invoke(() -> {
+            settleOpenOffers();
+            executor.execute(this::syncAndRender);
+            return true;
+        }), 1500, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * Confirm current GE slot state and drop restored offers that are no longer open. Called after
+     * the login replay has settled; also invoked from tests that have no scheduler.
+     */
+    void settleOpenOffers() {
+        GrandExchangeOffer[] slots = client.getGrandExchangeOffers();
+        if (slots != null) {
+            for (int i = 0; i < slots.length; i++) {
+                GrandExchangeOffer o = slots[i];
+                if (o == null || o.getState() == GrandExchangeOfferState.EMPTY) {
+                    capture.dropUnseen(i);
+                }
+            }
+        }
+        capture.dropUnconfirmedEmpties();
+    }
+
+    /** Authoritative for the server only after login placeholders have settled or never appeared. */
+    boolean offersKnown() {
+        return geObserved && !capture.hasUnconfirmedEmpties();
     }
 
     private void loadLog() {
@@ -993,7 +1031,9 @@ public class GeCopilotCloudPlugin extends Plugin {
             }
         }
         // Any offer change (new/updated/removed live offer, or a fill) refreshes the positions view
-        // promptly instead of waiting for the next 60s poll.
+        // promptly instead of waiting for the next 60s poll. Also arm the settle so a restored offer
+        // whose slot stayed EMPTY is dropped before that sync claims offersKnown.
+        scheduleOfferSettle();
         scheduleRefresh();
     }
 
